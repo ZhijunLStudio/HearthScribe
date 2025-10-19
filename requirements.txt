@@ -22,3 +22,5 @@ streamlit             # 用于构建Web应用
 torch                 # PyTorch, sentence-transformers和ultralytics的核心依赖
 
 python-dotenv 
+pyvis                 # 用于生成交互式网络图
+networkx              # 用于构建图结构的中间层

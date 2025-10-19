@@ -77,57 +77,49 @@ def camera_thread_func():
 
 
 def process_event_in_background(packaged_event, cognition, long_term_memory):
-    """这个函数在后台线程中执行，负责所有耗时的认知和记忆任务。"""
     event_id = packaged_event['event_id']
+    logging.info(f"🚀 [后台] 开始处理事件 {event_id}")
     
-    # BINGO! 添加顶层try-except块，捕获所有未预料的异常
     try:
-        logging.info(f"[后台任务] 开始处理事件 {event_id}...")
+        # 1. 认知分析 (包含两阶段：LVM摘要 + LLM知识提取)
+        # CognitiveCore.analyze_event 现在会返回一个包含 summary 和 kg_data 的字典
+        result = cognition.analyze_event(packaged_event)
         
-        start_time = time.time()
-        analysis_result = cognition.analyze_event_with_lvm(packaged_event)
-        end_time = time.time()
-        
-        # BINGO! 增加判断，只有成功获取结果才记录耗时
-        if analysis_result:
-            logging.info(f"[后台任务] 事件 {event_id} 的LVM分析耗时: {end_time - start_time:.2f} 秒。")
+        if not result or not result.get('summary'):
+             logging.error(f"❌ [后台] 事件 {event_id} 分析失败，摘要为空，将被丢弃！")
+             return
 
-        if analysis_result and "summary" in analysis_result:
-            summary = analysis_result["summary"]
-            logging.info(f"[后台任务] 认知核心分析结果: \"{summary}\"")
-            participants = set(d['name'] for f in packaged_event['frames'] for d in f['detections'])
-            image_paths = [f["image_path"] for f in packaged_event["frames"]]
-            long_term_memory.save_event_memory(
-                event_id=event_id,
-                timestamp=packaged_event["start_time"],
-                summary=summary,
-                participants=list(participants),
-                image_paths=image_paths
-            )
+        # 2. 保存到长期记忆 (双数据库)
+        success = long_term_memory.save_event(
+            event_data=packaged_event,
+            summary=result['summary'],
+            kg_data=result.get('kg_data') # 即使是 None 也能安全传递
+        )
+        
+        if success:
+            logging.info(f"✅ [后台] 事件 {event_id} 处理并保存完毕。")
         else:
-            logging.warning(f"[后台任务] 认知核心未能成功分析事件 {event_id}。分析结果为: {analysis_result}")
-            
-        logging.info(f"[后台任务] 事件 {event_id} 处理完毕。")
+             logging.error(f"❌ [后台] 事件 {event_id} 保存到数据库失败！")
 
     except Exception as e:
-        # BINGO! exc_info=True 会打印完整的错误堆栈信息，非常关键！
-        logging.error(f"[后台任务] 处理事件 {event_id} 时发生致命错误: {e}", exc_info=True)
+        logging.critical(f"💥 [后台] 处理事件 {event_id} 时发生严重错误: {e}", exc_info=True)
 
 
 def main_loop():
     global is_running
     setup_logging()
-    logging.info("========================================")
-    logging.info("正在初始化家居记忆助手 (数据采集)...")
+    logging.info("--- RaspiAgent 启动中 ---")
 
-    # BINGO: 将初始化过程包裹在try-except中，以便捕获配置错误等
     try:
-        perception = PerceptionProcessor(known_faces_dir=config.KNOWN_FACES_DIR)
-        short_term_memory = MemoryStream(storage_path=config.IMAGE_STORAGE_PATH)
-        long_term_memory = LongTermMemory(db_path=config.DB_PATH)
+        # 初始化各模块
+        perception = PerceptionProcessor(config.KNOWN_FACES_DIR)
+        short_term_memory = MemoryStream(config.IMAGE_STORAGE_PATH)
+        # BINGO: 传入两个数据库路径
+        long_term_memory = LongTermMemory(config.DB_PATH, config.SQLITE_DB_PATH)
         cognition = CognitiveCore()
+        logging.info("所有模块初始化成功。")
     except Exception as e:
-        logging.critical(f"模块初始化失败: {e}", exc_info=True)
+        logging.critical(f"模块初始化失败，程序无法启动: {e}", exc_info=True)
         return
 
     executor = ThreadPoolExecutor(max_workers=2)

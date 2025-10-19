@@ -1,134 +1,61 @@
-# tools/app_streamlit.py
-
 import streamlit as st
 import sys
 import os
 import pandas as pd
-import logging
-import time
+import streamlit.components.v1 as components # 用于渲染 HTML
 
-# --- 路径修正，确保能导入src下的模块 ---
+# --- 路径设置 ---
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# --- 导入后端函数 ---
-try:
-    from src.web_utils import (
-        get_all_memories_df,
-        format_memories_for_display,
-        answer_question,
-        run_analysis,
-        get_time_range
-    )
-except ImportError as e:
-    st.error(f"导入模块失败: {e}")
-    st.error("请确保你是在项目的根目录 (RaspiAgent/) 下运行 `streamlit run tools/app_streamlit.py`")
-    st.stop()
+from src import web_utils
 
-# --- Streamlit 页面配置 ---
-st.set_page_config(
-    page_title="RaspiAgent UI",
-    page_icon="🧠",
-    layout="wide"
-)
+st.set_page_config(page_title="HearthScribe", page_icon="🔥", layout="wide")
+st.title("🔥 HearthScribe 智能中枢")
 
-# --- 主标题 ---
-st.header("🧠 RaspiAgent 智能记忆助手", divider="rainbow")
+# --- 侧边栏状态 ---
+with st.sidebar:
+    st.header("系统状态")
+    if web_utils.MEMORY:
+        st.success("后端服务已连接")
+    else:
+        st.error("后端服务连接失败")
+    
+    if st.button("刷新数据"):
+        st.rerun()
 
+# --- 主界面 Tab ---
+tab1, tab2, tab3 = st.tabs(["💬 记忆问答", "🕸️ 知识图谱", "📋 事件流"])
 
-# --- 标签页 ---
-tab1, tab2, tab3 = st.tabs(["[ 📷 记忆浏览器 ]", "[ 💬 问答助手 ]", "[ 📊 总结与分析 ]"])
-
-
-# --- 1. 记忆浏览页面 ---
+# === Tab 1: 问答 (复用之前的逻辑，UI稍微美化) ===
 with tab1:
-    # 使用 st.cache_data 缓存数据
-    @st.cache_data(ttl=60) # 缓存1分钟
-    def load_memory_data():
-        df = get_all_memories_df()
-        if df.empty:
-            return None, "数据库中暂无记忆数据。", pd.DataFrame(columns=["时间", "摘要", "参与者"])
-        images, status, dataframe_data = format_memories_for_display(df)
-        return images, status, dataframe_data
-    
-    with st.expander("ℹ️ 查看状态与操作", expanded=True):
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            if st.button("🔄 刷新记忆", use_container_width=True):
-                st.cache_data.clear()
-                st.toast("记忆已刷新！", icon="✅")
-        
-        try:
-            images, status, dataframe_data = load_memory_data()
-            with col2:
-                st.info(f"**当前状态:** {status}")
-        except Exception as e:
-            st.error(f"加载记忆时出错: {e}")
-            images, dataframe_data = None, pd.DataFrame()
-
-    if images is not None:
-        st.subheader("🖼️ 记忆预览 (最新在前)", divider="gray")
-        if images:
-            cols = st.columns(5)
-            for i, (image_path, caption) in enumerate(images):
-                with cols[i % 5]:
-                    st.image(image_path, caption=caption, use_column_width="auto")
-        else:
-            st.warning("没有找到可显示的记忆图片。")
-
-        st.subheader("📋 详细记忆列表", divider="gray")
-        st.dataframe(dataframe_data, use_container_width=True, hide_index=True)
-
-# --- 2. 问答助手页面 ---
-with tab2:
-    st.subheader("💬 记忆问答助手", divider="gray")
-    st.markdown("向记忆库提问，探索过去的点滴。")
-
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    if prompt := st.chat_input("例如：lizhijun在喝水吗？"):
+    st.subheader("向记忆提问")
+    # ... (标准的 Streamlit 聊天代码，和之前类似，调用 web_utils.answer_question) ...
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"])
+    if prompt := st.chat_input("最近发生了什么有趣的事？"):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
+        with st.chat_message("user"): st.markdown(prompt)
         with st.chat_message("assistant"):
-            try:
-                response_generator = answer_question(prompt, st.session_state.messages)
-                full_response = st.write_stream(response_generator)
-                st.session_state.messages.append({"role": "assistant", "content": full_response})
-            except Exception as e:
-                st.error(f"问答时发生错误: {e}")
-                logging.error("问答时发生错误", exc_info=True)
+            response = st.write_stream(web_utils.answer_question(prompt, []))
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
-# --- 3. 总结分析页面 ---
-with tab3:
-    st.subheader("📊 总结与分析", divider="gray")
-    st.markdown("对指定时间范围的记忆进行深度分析，发现行为模式。")
+# === Tab 2: 酷炫的知识图谱可视化 ===
+with tab2:
+    st.subheader("全域知识图谱 (Interactive)")
+    st.caption("这是 Agent“脑中”所有实体和关系的动态可视化。你可以拖动节点、缩放查看。")
     
-    try:
-        min_date, max_date = get_time_range()
-        col1, col2 = st.columns(2)
-        with col1:
-            start_date_input = st.date_input("起始日期", value=min_date, min_value=min_date, max_value=max_date)
-        with col2:
-            end_date_input = st.date_input("终止日期", value=max_date, min_value=min_date, max_value=max_date)
+    # 添加一个滑块来控制显示的节点数量，防止图太大卡顿
+    limit = st.slider("显示最新的多少条关系?", 50, 500, 150)
+    
+    with st.spinner("正在构建神经元网络..."):
+        # 调用后端生成 HTML
+        graph_html = web_utils.generate_knowledge_graph_html(limit=limit)
+        # 使用 components.html 渲染 Pyvis 生成的交互式图表
+        components.html(graph_html, height=650, scrolling=True)
 
-        if st.button("🚀 生成分析报告"):
-            if start_date_input > end_date_input:
-                st.error("错误：起始日期不能晚于终止日期。")
-            else:
-                with st.spinner("正在进行深度分析，请稍候..."):
-                    try:
-                        report = run_analysis(start_date_input, end_date_input)
-                        st.subheader("分析报告")
-                        st.markdown(report)
-                    except Exception as e:
-                        st.error(f"生成报告时出错: {e}")
-                        logging.error("生成报告时出错", exc_info=True)
-    except Exception as e:
-        st.error(f"加载时间范围时出错: {e}")
-        logging.error("加载时间范围时出错", exc_info=True)
+# === Tab 3: 简单的事件流表格 ===
+with tab3:
+    st.subheader("最近的事件记录")
+    df = web_utils.get_recent_events_df()
+    st.dataframe(df, use_container_width=True, hide_index=True)

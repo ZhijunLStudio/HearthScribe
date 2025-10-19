@@ -36,3 +36,4 @@ weights/
 *.log
 *.db
 .env
+temp_graph.html

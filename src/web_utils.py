@@ -1,200 +1,157 @@
-# src/web_utils.py
 import pandas as pd
-from pathlib import Path
 import json
-from datetime import datetime, timedelta
-from openai import OpenAI
-import config
 import logging
 import time
+from datetime import datetime
+from openai import OpenAI
+import config
+# BINGO! 导入 pyvis 用于图谱生成
+from pyvis.network import Network
+import networkx as nx
 
-# 初始化一次性的模块实例
-from src.memory.long_term_memory import LongTermMemory
-
-logger = logging.getLogger(__name__)
-
-# --- 全局实例 ---
-# 将初始化包裹在try-except中，以便在UI中显示错误
+# 初始化单例
 try:
-    MEMORY = LongTermMemory(db_path=config.DB_PATH)
+    from src.memory.long_term_memory import LongTermMemory
+    MEMORY = LongTermMemory(config.DB_PATH, config.SQLITE_DB_PATH)
     LLM_CLIENT = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
-    logger.info("Web Utils: 后端模块初始化成功。")
 except Exception as e:
-    # 打印到控制台，以便调试
-    print(f"CRITICAL: Failed to initialize modules for web app: {e}")
-    # 在日志中记录详细错误
-    logging.critical("Web Utils: 后端模块初始化失败。", exc_info=True)
+    logging.critical(f"Web Utils backend init failed: {e}", exc_info=True)
     MEMORY = None
     LLM_CLIENT = None
 
-def get_all_memories_df():
-    """获取所有记忆并返回DataFrame"""
-    if MEMORY is None:
-        logger.error("MEMORY模块未初始化，无法获取记忆。")
-        return pd.DataFrame()
+logger = logging.getLogger(__name__)
+
+# --- 1. 知识图谱可视化核心函数 ---
+def generate_knowledge_graph_html(limit=200):
+    """
+    从 SQLite 获取最新的关系数据，并使用 Pyvis 生成一个互动的 HTML 图谱。
+    返回: HTML 字符串
+    """
+    if not MEMORY: return "<div>Backend Error</div>"
+
+    # 1. 获取数据
+    relations = MEMORY.get_all_kg_data(limit=limit)
+    if not relations:
+        return "<div>暂无足够的知识图谱数据。请先让 Agent 观察一些事件。</div>"
+
+    # 2. 构建 NetworkX 图
+    G = nx.DiGraph()
+    for r in relations:
+        # 添加节点 (带颜色区分类型)
+        G.add_node(r['source'], group=r['source_type'], title=r['source_type'])
+        G.add_node(r['target'], group=r['target_type'], title=r['target_type'])
+        # 添加边 (带标签)
+        G.add_edge(r['source'], r['target'], label=r['relation'], title=f"Event: {r['event_id']}")
+
+    # 3. 使用 Pyvis 转换和美化
+    net = Network(height="600px", width="100%", notebook=False, directed=True, cdn_resources='remote')
+    net.from_nx(G)
+    
+    # 配置物理引擎让图更好看
+    net.set_options("""
+    var options = {
+      "nodes": {
+        "font": { "size": 16, "face": "tahoma" },
+        "borderWidth": 2,
+        "shadow": true
+      },
+      "edges": {
+        "color": { "inherit": true },
+        "smooth": { "type": "continuous" },
+        "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } }
+      },
+      "physics": {
+        "forceAtlas2Based": {
+            "gravitationalConstant": -50,
+            "centralGravity": 0.01,
+            "springLength": 100,
+            "springConstant": 0.08
+        },
+        "maxVelocity": 50,
+        "solver": "forceAtlas2Based",
+        "timestep": 0.35,
+        "stabilization": { "iterations": 150 }
+      },
+      "groups": {
+          "Person": { "color": "#FF9999", "shape": "dot" },
+          "Object": { "color": "#99CCFF", "shape": "box" },
+          "Location": { "color": "#99FF99", "shape": "triangle" },
+          "Activity": { "color": "#FFFF99", "shape": "diamond" }
+      }
+    }
+    """)
+    
+    # 4. 导出为 HTML 字符串
     try:
-        return MEMORY.table.to_pandas()
+        # save() 实际上会写文件，我们用 write_html 把内容写到内存StringIO可能更干净，
+        # 但 Pyvis 的 API 设计比较偏向文件。这里生成临时文件再读取。
+        tmp_path = "temp_graph.html"
+        net.save_graph(tmp_path)
+        with open(tmp_path, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+        return html_content
     except Exception as e:
-        logger.error(f"从LanceDB获取记忆失败: {e}", exc_info=True)
-        return pd.DataFrame()
+        logger.error(f"Graph generation failed: {e}")
+        return f"<div>Error generating graph: {e}</div>"
 
-def format_memories_for_display(df):
-    """格式化DataFrame以便在UI中显示"""
-    if df.empty:
-        return [], "暂无记忆数据。", pd.DataFrame()
-        
-    # 时间格式化
-    df['time'] = pd.to_datetime(df['timestamp'], unit='s').dt.strftime('%Y-%m-%d %H:%M:%S')
-    
-    # 参与者格式化
-    def safe_json_loads(x):
-        try:
-            return json.loads(x)
-        except (json.JSONDecodeError, TypeError):
-            return [] # 如果解析失败，返回空列表
-    df['participants_list'] = df['participants'].apply(safe_json_loads)
-    df['participants'] = df['participants_list'].apply(lambda x: ', '.join(x) if x else '无')
-
-    # 提取第一张图片作为预览图
-    def get_first_image(paths_json):
-        try:
-            paths = json.loads(paths_json)
-            return paths[0] if paths else None
-        except (json.JSONDecodeError, TypeError):
-            return None
-    df['preview_image'] = df['image_paths'].apply(get_first_image)
-
-    # 准备用于显示的DataFrame，并按时间倒序排列
-    display_df = df[['time', 'summary', 'participants']].sort_values(by='time', ascending=False)
-    
-    # 创建Gallery所需格式
-    gallery_data = []
-    if 'preview_image' in df.columns:
-        valid_previews = df.dropna(subset=['preview_image'])
-        for _, row in valid_previews.sort_values(by='time', ascending=False).iterrows():
-            gallery_data.append((row['preview_image'], f"{row['time']}\n{row['summary']}"))
-
-    status = f"共找到 {len(df)} 条记忆记录。"
-    return gallery_data, status, display_df
-
+# --- 2. 升级后的 RAG 问答 (完整上下文，不简化) ---
 def answer_question(question, history):
-    """RAG问答逻辑 (作为生成器，用于流式输出)"""
-    if MEMORY is None or LLM_CLIENT is None:
-        yield "错误：后端模块未成功初始化。"
-        return
-        
-    logging.info(f"收到RAG问题: {question}")
-    # 增加搜索结果数量以获得更丰富上下文
-    retrieved_memories = MEMORY.search_memory(question, top_k=5)
-
-    if not retrieved_memories:
-        yield "抱歉，关于这个问题，记忆库中没有找到相关记录。"
+    if not MEMORY or not LLM_CLIENT:
+        yield "错误：后端未连接。"
         return
 
-    context = "以下是一些按时间排序的相关记忆片段：\n\n"
-    for i, mem in enumerate(retrieved_memories):
-        event_time = datetime.fromtimestamp(mem['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
-        context += f"--- 记忆片段 {i+1} (时间: {event_time}) ---\n"
-        context += f"摘要: {mem['summary']}\n"
-        try:
-            participants_list = json.loads(mem.get('participants', '[]'))
-            participants_str = ', '.join(participants_list) if participants_list else '未知'
-        except:
-            participants_str = '未知'
-        context += f"参与者: {participants_str}\n\n"
+    # 1. 混合检索 (Hybrid Search)
+    # 这一步会先用向量搜 LanceDB，再拿 ID 去 SQLite 查完整的事件和 KG
+    rich_events = MEMORY.hybrid_search(question, top_k=4)
 
-    # BINGO! 核心修正：完全客观、中立的Prompt
-    prompt = f"""
-你是一个AI记忆分析助手。你的任务是根据下面提供的【背景记忆信息】，客观、准确地回答用户的问题。
+    if not rich_events:
+        yield "我的记忆中似乎没有与此相关的信息。"
+        return
 
-【背景记忆信息】:
-{context}
----
-用户的问题是: "{question}"
+    # 2. 构建“富”上下文
+    context_str = "这是基于我记忆检索到的相关事件及其知识图谱细节：\n\n"
+    for i, event in enumerate(rich_events):
+        time_str = datetime.fromtimestamp(event['start_time']).strftime('%Y-%m-%d %H:%M:%S')
+        context_str += f"--- 事件片段 {i+1} [{time_str}] ---\n"
+        context_str += f"【摘要】: {event['summary']}\n"
+        # BINGO! 这里加入了完整的 KG 细节，不再是“简化处理”
+        context_str += f"【知识图谱关系】: {event['kg_text']}\n\n"
 
-请严格遵守以下规则回答：
-1.  你的回答必须完全基于上面提供的【背景记忆信息】。
-2.  始终使用第三人称来描述事件和人物。例如：“根据记忆，lizhijun当时正在...” 或 “在那个时间点，一个穿红衣服的人...”。
-3.  **绝对不要**使用“我”或“你”等人称代词来指代AI自己或用户。
-4.  如果信息不足以回答，就明确说明“根据现有的记忆片段，无法确定...”。
+    # 3. 生成回答
+    system_prompt = """
+你通过一个具备视觉和认知能力的 AI Agent 的记忆来回答问题。
+请基于提供的【记忆上下文】，用自然、流畅、类似人类助手的口吻回答用户。
+- 如果记忆中有明确的实体关系（如“A在B地点”或“A使用了B”），请在回答中利用这些细节，这会让回答显得更聪明。
+- 坦诚：如果上下文中没有足够信息，就直接说不知道，不要编造。
+- 不要提及“根据记忆片段1...”这种技术术语，融合成一段连贯的叙述。
 """
     try:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"【记忆上下文】\n{context_str}\n\n用户问题: {question}"}
+        ]
         response = LLM_CLIENT.chat.completions.create(
             model=config.LLM_MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2, # 进一步降低温度，让回答更客观
-            stream=True
+            messages=messages,
+            stream=True,
+            temperature=0.4 # 稍微提高一点温度，让回答更自然
         )
         for chunk in response:
-            if chunk.choices[0].delta.content is not None:
-                content = chunk.choices[0].delta.content
-                yield content
-                time.sleep(0.02)
+            if chunk.choices.delta.content:
+                yield chunk.choices.delta.content
+                time.sleep(0.01)
     except Exception as e:
-        logging.error(f"调用LLM生成答案失败: {e}", exc_info=True)
-        yield f"调用大模型时出错: {e}"
+        yield f"生成回答时出错: {e}"
 
-def run_analysis(start_date, end_date):
-    """执行指定时间范围的总结分析"""
-    if MEMORY is None or LLM_CLIENT is None:
-        return "错误：后端模块未成功初始化。"
-
-    logging.info(f"开始执行分析，时间范围: {start_date} 到 {end_date}")
-    
-    try:
-        all_memories = get_all_memories_df()
-        if all_memories.empty:
-            return "数据库中没有任何记忆，无法进行分析。"
-
-        start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-        end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
-
-        period_memories = all_memories[(all_memories['timestamp'] >= start_ts) & (all_memories['timestamp'] <= end_ts)]
-        
-        if period_memories.empty:
-            return f"在 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间没有任何记忆记录。"
-
-        context = f"以下是从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间，按时间顺序记录的所有活动片段。\n\n"
-        for _, row in period_memories.sort_values(by='timestamp').iterrows():
-            event_time = datetime.fromtimestamp(row['timestamp']).strftime('%Y-%m-%d %H:%M')
-            try:
-                participants = json.loads(row.get('participants', '[]'))
-            except:
-                participants = []
-            context += f"- 时间: {event_time}, 人物: {participants or '未知'}, 事件: {row['summary']}\n"
-
-        # BINGO! 同样修正这里的Prompt为中立视角
-        prompt = f"""
-你是一位专业的行为数据分析师。请将以下在指定时间段内记录的活动日志，整合成一份客观的、结构化的分析报告。
-
-报告应该包含：
-1. **整体摘要**: 高度概括这段时间内观察到的主要活动和状态。
-2. **主要活动**: 列出几个最主要的活动类别及其描述。
-3. **行为模式或异常**: 指出任何有趣的习惯、趋势或与平时不同的地方。
-
-【活动记录】:
-{context}
----
-请生成这份分析报告，使用Markdown格式化，使其清晰易读。
-"""
-        response = LLM_CLIENT.chat.completions.create(
-            model=config.LLM_MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        report_text = response.choices[0].message.content
-        return report_text
-
-    except Exception as e:
-        logging.error(f"执行分析失败: {e}", exc_info=True)
-        return f"执行分析时出错: {e}"
-
-def get_time_range():
-    """获取数据库中记忆的最早和最晚时间"""
-    df = get_all_memories_df()
-    if df.empty:
-        now = datetime.now()
-        return now.date(), now.date()
-    min_date = pd.to_datetime(df['timestamp'].min(), unit='s').date()
-    max_date = pd.to_datetime(df['timestamp'].max(), unit='s').date()
-    return min_date, max_date
+# --- 3. 其他辅助函数 (保持或微调) ---
+def get_recent_events_df(limit=50):
+    """获取最近的事件列表用于表格显示"""
+    if not MEMORY: return pd.DataFrame()
+    cursor = MEMORY.sqlite_conn.cursor()
+    cursor.execute("SELECT start_time, summary FROM events ORDER BY start_time DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    df = pd.DataFrame(rows, columns=['timestamp', 'summary'])
+    if not df.empty:
+        df['time'] = pd.to_datetime(df['timestamp'], unit='s').dt.strftime('%Y-%m-%d %H:%M:%S')
+        return df[['time', 'summary']]
+    return pd.DataFrame(columns=['time', 'summary'])
