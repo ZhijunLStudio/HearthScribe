@@ -8,110 +8,113 @@ import config
 
 logger = logging.getLogger(__name__)
 
+def draw_debug_info_for_event_frame(frame, detections):
+    """一个独立的、用于生成事件帧和预览图的绘图函数"""
+    debug_frame = frame.copy()
+    for det in detections:
+        box = det.get('box')
+        if box is None: continue
+        name = det.get('name', 'Unknown')
+        x1, y1, x2, y2 = map(int, box)
+        color = (0, 0, 255) if name == "Unknown" else (0, 255, 0)
+        cv2.rectangle(debug_frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(debug_frame, name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+    return debug_frame
+
+
 class MemoryStream:
     def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(exist_ok=True, parents=True)
-        
         self.is_capturing = False
         self.last_person_seen_time = 0
         self.last_frame_capture_time = 0
         self.buffer = deque()
-        
-        # BINGO! 新增状态变量，用于记录事件开始时间
         self.event_start_time = 0
-        
-        logger.info(
-            f"短期记忆流已初始化 (混合驱动模式)。"
-            f"不活动超时: {config.EVENT_INACTIVITY_TIMEOUT}s, "
-            f"最大事件时长: {config.EVENT_MAX_DURATION_SECONDS}s"
-        )
+        logger.info("MemoryStream initialized.")
 
     def update(self, frame, detections):
-        """主更新函数，管理事件的整个生命周期"""
         current_time = time.time()
         
-        # --- 如果场景中有人 ---
         if detections:
-            # 如果是新事件的开始
             if not self.is_capturing:
                 self.is_capturing = True
                 self.buffer.clear()
-                self.last_frame_capture_time = 0
-                # BINGO! 记录新事件的开始时间
                 self.event_start_time = current_time
-                logger.info(f"检测到活动，开始捕获新事件...")
+                logging.info("检测到活动，开始捕获新事件...")
             
-            # 更新最后一次见到人的时间
             self.last_person_seen_time = current_time
             
-            # 根据间隔决定是否保存帧
             if current_time - self.last_frame_capture_time >= config.FRAME_CAPTURE_INTERVAL:
                 self.last_frame_capture_time = current_time
                 self.buffer.append({
-                    "frame": frame.copy(),
-                    "detections": detections,
-                    "timestamp": current_time
+                    "frame": frame.copy(), "detections": detections, "timestamp": current_time
                 })
-                logger.info(f"事件进行中... 已捕获第 {len(self.buffer)} 帧。")
-                
-            # BINGO! 新增逻辑：检查事件是否超时
+            
             if current_time - self.event_start_time >= config.EVENT_MAX_DURATION_SECONDS:
-                logger.info(f"事件已达到 {config.EVENT_MAX_DURATION_SECONDS} 秒最大时长，强制结束并打包。")
+                logging.info("事件达到最大时长，强制打包。")
                 packaged_event = self.package_event()
-                
-                # 立即开始下一个事件片段的捕获
+                # 无缝开启下一个事件
                 self.is_capturing = True
+                self.buffer.clear()
                 self.event_start_time = current_time
-                # 将当前帧作为新事件的第一帧
+                self.last_frame_capture_time = current_time
                 self.buffer.append({
-                    "frame": frame.copy(),
-                    "detections": detections,
-                    "timestamp": current_time
+                    "frame": frame.copy(), "detections": detections, "timestamp": current_time
                 })
-                logger.info("无缝开启下一个事件片段...")
                 return packaged_event
 
-        # --- 如果场景中无人，但事件正在捕获中 ---
         elif self.is_capturing:
-            # 检查不活动时间是否已超过超时阈值
             if current_time - self.last_person_seen_time > config.EVENT_INACTIVITY_TIMEOUT:
-                logger.info(f"检测到超过 {config.EVENT_INACTIVITY_TIMEOUT} 秒无活动，事件结束。")
+                logging.info("检测到无活动超时，事件结束。")
                 self.is_capturing = False
-                # BINGO! 事件结束后重置开始时间
-                self.event_start_time = 0
                 return self.package_event()
         
         return None
 
     def package_event(self):
-        """打包缓冲区中的帧为一个事件，并清空缓冲区"""
+        """
+        打包缓冲区中的帧。
+        BINGO! 现在为每一帧都绘制调试信息。
+        """
         if not self.buffer:
-            logger.warning("缓冲区为空，无法打包事件。")
             return None
         
         event_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         event_dir = self.storage_path / event_timestamp
         event_dir.mkdir()
 
-        # BINGO! 创建一个缓冲区副本进行处理，然后清空原缓冲区
         processing_buffer = list(self.buffer)
         self.buffer.clear()
 
         packaged_frames = []
+        preview_image_path = None
+
         for i, data in enumerate(processing_buffer):
-            path = str(event_dir / f"frame_{i+1:03d}.jpg")
-            cv2.imwrite(path, data["frame"])
+            # 1. 对当前帧绘制调试信息
+            frame_with_debug_info = draw_debug_info_for_event_frame(data["frame"], data["detections"])
+
+            # 2. 保存带调试信息的帧
+            debug_frame_path = str(event_dir / f"frame_{i+1:03d}.jpg")
+            cv2.imwrite(debug_frame_path, frame_with_debug_info)
+            
+            # 3. 将带调试信息的帧路径存入打包数据
             packaged_frames.append({
-                "image_path": path,
+                "image_path": debug_frame_path,
                 "detections": data["detections"],
                 "timestamp": data["timestamp"]
             })
             
-        logger.info(f"成功为事件 {event_timestamp} 打包 {len(packaged_frames)} 帧图像。")
+            # 4. 使用第一帧作为封面图 (preview.jpg)
+            if i == 0:
+                preview_image_path = str(event_dir / "preview.jpg")
+                cv2.imwrite(preview_image_path, frame_with_debug_info)
+                
+        logger.info(f"打包 {len(packaged_frames)} 帧带调试信息的图像到事件 {event_timestamp}")
         return {
             "event_id": event_timestamp,
             "frames": packaged_frames,
             "start_time": processing_buffer[0]["timestamp"],
-            "end_time": processing_buffer[-1]["timestamp"]
+            "end_time": processing_buffer[-1]["timestamp"],
+            "preview_image_path": preview_image_path
         }

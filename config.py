@@ -25,7 +25,7 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "ernie-4.5-turbo-vl")
 
 # --- 存储配置 ---
-DB_PATH = "./memory_db/lancedb"         # LanceDB 向量库路径
+LANCEDB_PATH = "./memory_db/lancedb"        # LanceDB 向量库路径
 SQLITE_DB_PATH = "./memory_db/knowledge.db" # SQLite 知识图谱路径
-IMAGE_STORAGE_PATH = "./event_images"   # 图片存储路径
-KNOWN_FACES_DIR = "./known_faces"       # 已知人脸目录
+IMAGE_STORAGE_PATH = "./event_images"       # 图片存储路径
+KNOWN_FACES_DIR = "./known_faces"           # 已知人脸目录
