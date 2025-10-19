@@ -1,0 +1,24 @@
+# --- Core Libraries ---
+opencv-python         # 用于图像和视频处理 (cv2)
+openai                # 用于调用OpenAI兼容的LLM和LVM API
+numpy                 # 科学计算库，被很多其他库依赖
+pandas                # 用于数据处理，尤其是在Web UI和每日总结中
+Pillow                # 图像处理库，face-recognition的依赖
+
+# --- Perception ---
+ultralytics           # YOLOv8模型库
+face-recognition      # 人脸识别库 (依赖 dlib)
+# 注意: face-recognition可能需要手动安装dlib的系统依赖 (如cmake, C++ compiler)
+
+# --- Memory ---
+lancedb               # 向量数据库
+pyarrow               # LanceDB的依赖，用于高效数据格式
+sentence-transformers # 用于生成文本嵌入向量
+
+# --- Web UI ---
+streamlit             # 用于构建Web应用
+
+# --- ML/AI Backend ---
+torch                 # PyTorch, sentence-transformers和ultralytics的核心依赖
+
+python-dotenv 

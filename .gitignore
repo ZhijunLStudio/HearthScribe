@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# IDE and OS specific files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Project-generated data (IMPORTANT!)
+# 这些是你的Agent运行时产生的数据，不应该上传到仓库
+logs/
+memory_db/
+event_images/
+face_crops/
+known_faces/
+weights/
+
+# Secrets and Configurations
+# 强烈建议不要将含有真实API密钥的config.py上传
+# 可以保留一个示例文件，让使用者自己填写
+# config.py 
+# 如果你想保留一个模板，可以取消上面一行的注释，然后创建一个 config.example.py
+
+# Streamlit specific
+.streamlit/
+
+# Other
+*.log
+*.db
+.env
