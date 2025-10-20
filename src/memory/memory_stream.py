@@ -9,20 +9,52 @@ import config
 logger = logging.getLogger(__name__)
 
 def draw_debug_info_for_event_frame(frame, detections):
-    """一个独立的、用于生成事件帧和预览图的绘图函数"""
+    """
+    一个独立的、用于生成事件帧和预览图的绘图函数。
+    BINGO! 现在会同时绘制人体框和人脸框。
+    """
     debug_frame = frame.copy()
     for det in detections:
-        box = det.get('box')
-        if box is None: continue
+        person_box = det.get('box')
+        face_box = det.get('face_box') # 获取人脸框
         name = det.get('name', 'Unknown')
-        x1, y1, x2, y2 = map(int, box)
-        color = (0, 0, 255) if name == "Unknown" else (0, 255, 0)
-        cv2.rectangle(debug_frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(debug_frame, name, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+
+        # --- 绘制人体框 (用浅一点的颜色) ---
+        if person_box is not None:
+            px1, py1, px2, py2 = map(int, person_box)
+            person_color = (0, 128, 0) if name != "Unknown" else (0, 0, 128) # 已知用深绿，未知用深红
+            cv2.rectangle(debug_frame, (px1, py1), (px2, py2), person_color, 1)
+
+        # --- 绘制人脸框和名字 (用鲜艳的颜色) ---
+        # 名字将画在人脸框旁边，这是核心的识别信息
+        if face_box is not None:
+            fx1, fy1, fx2, fy2 = map(int, face_box)
+            face_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255) # 已知用亮绿，未知用亮红
+            
+            # 绘制人脸框
+            cv2.rectangle(debug_frame, (fx1, fy1), (fx2, fy2), face_color, 2)
+            
+            # 准备并绘制名字标签
+            label = name
+            label_size, base_line = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+            
+            # 标签背景
+            cv2.rectangle(debug_frame, (fx1, fy1 - label_size[1] - 10), 
+                          (fx1 + label_size[0], fy1 - 10), face_color, cv2.FILLED)
+            # 标签文本
+            cv2.putText(debug_frame, label, (fx1, fy1 - 12), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2) # 用黑色字体
+        
+        # 如果没有检测到人脸，但有人体，就把名字写在人体框上作为备用
+        elif person_box is not None:
+            px1, py1, _, _ = map(int, person_box)
+            person_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            cv2.putText(debug_frame, name, (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, person_color, 2)
+            
     return debug_frame
 
-
 class MemoryStream:
+    # ... (除了上面的绘图函数，MemoryStream 类的其他所有代码都保持不变) ...
     def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(exist_ok=True, parents=True)
@@ -73,10 +105,6 @@ class MemoryStream:
         return None
 
     def package_event(self):
-        """
-        打包缓冲区中的帧。
-        BINGO! 现在为每一帧都绘制调试信息。
-        """
         if not self.buffer:
             return None
         
@@ -91,21 +119,14 @@ class MemoryStream:
         preview_image_path = None
 
         for i, data in enumerate(processing_buffer):
-            # 1. 对当前帧绘制调试信息
             frame_with_debug_info = draw_debug_info_for_event_frame(data["frame"], data["detections"])
-
-            # 2. 保存带调试信息的帧
             debug_frame_path = str(event_dir / f"frame_{i+1:03d}.jpg")
             cv2.imwrite(debug_frame_path, frame_with_debug_info)
-            
-            # 3. 将带调试信息的帧路径存入打包数据
             packaged_frames.append({
                 "image_path": debug_frame_path,
                 "detections": data["detections"],
                 "timestamp": data["timestamp"]
             })
-            
-            # 4. 使用第一帧作为封面图 (preview.jpg)
             if i == 0:
                 preview_image_path = str(event_dir / "preview.jpg")
                 cv2.imwrite(preview_image_path, frame_with_debug_info)

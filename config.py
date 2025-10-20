@@ -8,10 +8,10 @@ load_dotenv()
 SOURCE_VIDEO = 0  # 如果用文件测试，改为视频路径，如 "./test_video.mp4"
 
 # --- 核心采样与处理频率 ---
-PROCESS_INTERVAL = 0.5 # 主循环稍微快一点，提高响应速度
+PROCESS_INTERVAL = 2 # 主循环稍微快一点，提高响应速度
 
 # --- 动态事件配置 ---
-FRAME_CAPTURE_INTERVAL = 2    # 每2秒抓一帧，减少冗余
+FRAME_CAPTURE_INTERVAL = 5    # 每2秒抓一帧，减少冗余
 EVENT_INACTIVITY_TIMEOUT = 60 # 60秒无人，事件结束
 EVENT_MAX_DURATION_SECONDS = 300 # 最长5分钟
 
