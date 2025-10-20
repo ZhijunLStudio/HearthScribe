@@ -9,43 +9,28 @@ import config
 logger = logging.getLogger(__name__)
 
 def draw_debug_info_for_event_frame(frame, detections):
-    """
-    一个独立的、用于生成事件帧和预览图的绘图函数。
-    BINGO! 现在会同时绘制人体框和人脸框。
-    """
+    """一个独立的、用于生成事件帧和预览图的绘图函数"""
     debug_frame = frame.copy()
     for det in detections:
         person_box = det.get('box')
-        face_box = det.get('face_box') # 获取人脸框
+        face_box = det.get('face_box')
         name = det.get('name', 'Unknown')
 
-        # --- 绘制人体框 (用浅一点的颜色) ---
         if person_box is not None:
             px1, py1, px2, py2 = map(int, person_box)
-            person_color = (0, 128, 0) if name != "Unknown" else (0, 0, 128) # 已知用深绿，未知用深红
+            person_color = (0, 128, 0) if name != "Unknown" else (0, 0, 128)
             cv2.rectangle(debug_frame, (px1, py1), (px2, py2), person_color, 1)
 
-        # --- 绘制人脸框和名字 (用鲜艳的颜色) ---
-        # 名字将画在人脸框旁边，这是核心的识别信息
         if face_box is not None:
             fx1, fy1, fx2, fy2 = map(int, face_box)
-            face_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255) # 已知用亮绿，未知用亮红
-            
-            # 绘制人脸框
+            face_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
             cv2.rectangle(debug_frame, (fx1, fy1), (fx2, fy2), face_color, 2)
-            
-            # 准备并绘制名字标签
             label = name
             label_size, base_line = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-            
-            # 标签背景
             cv2.rectangle(debug_frame, (fx1, fy1 - label_size[1] - 10), 
                           (fx1 + label_size[0], fy1 - 10), face_color, cv2.FILLED)
-            # 标签文本
             cv2.putText(debug_frame, label, (fx1, fy1 - 12), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2) # 用黑色字体
-        
-        # 如果没有检测到人脸，但有人体，就把名字写在人体框上作为备用
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
         elif person_box is not None:
             px1, py1, _, _ = map(int, person_box)
             person_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
@@ -54,7 +39,6 @@ def draw_debug_info_for_event_frame(frame, detections):
     return debug_frame
 
 class MemoryStream:
-    # ... (除了上面的绘图函数，MemoryStream 类的其他所有代码都保持不变) ...
     def __init__(self, storage_path: str):
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(exist_ok=True, parents=True)
@@ -66,6 +50,7 @@ class MemoryStream:
         logger.info("MemoryStream initialized.")
 
     def update(self, frame, detections):
+        # ... (这个方法保持不变) ...
         current_time = time.time()
         
         if detections:
@@ -86,7 +71,6 @@ class MemoryStream:
             if current_time - self.event_start_time >= config.EVENT_MAX_DURATION_SECONDS:
                 logging.info("事件达到最大时长，强制打包。")
                 packaged_event = self.package_event()
-                # 无缝开启下一个事件
                 self.is_capturing = True
                 self.buffer.clear()
                 self.event_start_time = current_time
@@ -105,6 +89,10 @@ class MemoryStream:
         return None
 
     def package_event(self):
+        """
+        打包缓冲区中的帧。
+        BINGO! 所有保存的路径都将转换为绝对路径。
+        """
         if not self.buffer:
             return None
         
@@ -120,16 +108,25 @@ class MemoryStream:
 
         for i, data in enumerate(processing_buffer):
             frame_with_debug_info = draw_debug_info_for_event_frame(data["frame"], data["detections"])
-            debug_frame_path = str(event_dir / f"frame_{i+1:03d}.jpg")
-            cv2.imwrite(debug_frame_path, frame_with_debug_info)
+            
+            # 创建 Path 对象
+            debug_frame_path_obj = event_dir / f"frame_{i+1:03d}.jpg"
+            cv2.imwrite(str(debug_frame_path_obj), frame_with_debug_info)
+            
+            # 关键修复：将路径转换为绝对路径再存储
+            absolute_frame_path = str(debug_frame_path_obj.resolve())
+            
             packaged_frames.append({
-                "image_path": debug_frame_path,
+                "image_path": absolute_frame_path, # 存储绝对路径
                 "detections": data["detections"],
                 "timestamp": data["timestamp"]
             })
+            
             if i == 0:
-                preview_image_path = str(event_dir / "preview.jpg")
-                cv2.imwrite(preview_image_path, frame_with_debug_info)
+                preview_image_path_obj = event_dir / "preview.jpg"
+                cv2.imwrite(str(preview_image_path_obj), frame_with_debug_info)
+                # 关键修复：同样转换为绝对路径
+                preview_image_path = str(preview_image_path_obj.resolve())
                 
         logger.info(f"打包 {len(packaged_frames)} 帧带调试信息的图像到事件 {event_timestamp}")
         return {
@@ -137,5 +134,5 @@ class MemoryStream:
             "frames": packaged_frames,
             "start_time": processing_buffer[0]["timestamp"],
             "end_time": processing_buffer[-1]["timestamp"],
-            "preview_image_path": preview_image_path
+            "preview_image_path": preview_image_path # 现在这里也是绝对路径
         }
