@@ -1,3 +1,4 @@
+# src/cognition/cognitive_core.py
 import base64
 import json
 from openai import OpenAI
@@ -97,8 +98,9 @@ class CognitiveCore:
             logger.error(f"LVM call failed: {e}", exc_info=True)
             return None
 
+    # src/cognition/cognitive_core.py (修改后的新代码)
+
     def _extract_knowledge_graph(self, summary_text):
-        # (这个方法保持不变)
         prompt = f"""
 从以下摘要中提取知识图谱。
 实体类型只能是: ["Person", "Object", "Location", "Activity"]
@@ -106,19 +108,51 @@ class CognitiveCore:
 
 【输入摘要】: "{summary_text}"
 
-【输出格式】: 必须是合法的 JSON: {{"entities": [ {{"name": "...", "type": "..."}} ], "relationships": [ {{"source": "...", "target": "...", "type": "..."}} ]}}
+【输出格式】: 必须是合法的 JSON，并用 markdown 代码块包裹: ```json\n{{"entities": [...], "relationships": [...]}}\n```
 """
         try:
             t0 = time.time()
-            resp = self.llm_client.chat.completions.create(model=config.LLM_MODEL_NAME, messages=[{"role": "user", "content": prompt}], temperature=0.1)
-            raw_json = resp.choices[0].message.content.strip()
-            json_str = re.search(r'\{.*\}', raw_json, re.DOTALL)
-            if json_str:
-                kg_data = json.loads(json_str.group(0))
-                logger.info(f"KG Extracted in {time.time()-t0:.2f}s.")
+            resp = self.llm_client.chat.completions.create(
+                model=config.LLM_MODEL_NAME, 
+                messages=[{"role": "user", "content": prompt}], 
+                temperature=0.1,
+                # BINGO! 很多模型支持JSON模式，直接让它输出合法的JSON
+                response_format={"type": "json_object"} 
+            )
+            raw_response = resp.choices[0].message.content.strip()
+            
+            # --- 解析JSON ---
+            # 现代OpenAI兼容的API支持 `response_format`,可以直接解析
+            try:
+                kg_data = json.loads(raw_response)
+                logger.info(f"KG Extracted in {time.time()-t0:.2f}s using direct JSON mode.")
                 return kg_data
-            logger.error(f"Failed to find JSON in LLM response: {raw_json}")
+            except json.JSONDecodeError:
+                logger.warning("Direct JSON parsing failed. Falling back to regex extraction.")
+                # 如果直接解析失败（可能API不支持或返回了额外文本），则使用下面的后备方法
+                pass
+
+            # --- 后备方法：正则表达式提取 ---
+            # 1. 优先匹配 ```json ... ``` 代码块
+            match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
+            if not match:
+                # 2. 如果没有代码块，再尝试匹配裸露的 {...}
+                match = re.search(r'(\{.*?\})', raw_response, re.DOTALL)
+
+            if match:
+                json_str = match.group(1)
+                try:
+                    kg_data = json.loads(json_str)
+                    logger.info(f"KG Extracted in {time.time()-t0:.2f}s using regex fallback.")
+                    return kg_data
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode extracted JSON string: {json_str}", exc_info=True)
+                    logger.error(f"JSONDecodeError: {e}")
+                    return None
+            
+            logger.error(f"Failed to find any JSON in LLM response: {raw_response}")
             return None
+
         except Exception as e:
-            logger.error(f"LLM KG extraction failed: {e}", exc_info=True)
+            logger.error(f"LLM KG extraction failed with an unexpected error: {e}", exc_info=True)
             return None

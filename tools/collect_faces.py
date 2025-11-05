@@ -1,4 +1,4 @@
-# collect_faces.py (V5 - 逻辑修正与健壮性提升)
+# tools/collect_faces.py
 import cv2
 from pathlib import Path
 from ultralytics import YOLO
