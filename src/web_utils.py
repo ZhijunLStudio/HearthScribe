@@ -1,191 +1,204 @@
-# src/web_utils.py
-import pandas as pd
-import json
+# src/web_utils.py (最终完整版)
 import logging
-import time
-from datetime import datetime, timedelta
-from openai import OpenAI
-import config
-from pyvis.network import Network
+from datetime import datetime
+from pathlib import Path
 import networkx as nx
-import streamlit as st
+from pyvis.network import Network
+import os
+import sys
+import pandas as pd
+from datetime import datetime, timedelta
+
+# 确保能找到src目录
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+import config
+from src.memory.long_term_memory import LongTermMemory
+from src.agent.master_agent import MasterAgent
 
 logger = logging.getLogger(__name__)
 
-# --- 单例初始化 ---
-# 使用 Streamlit 的缓存机制来创建和管理全局唯一的数据库和客户端实例
-@st.cache_resource
+# --- 单例模式实例化 ---
+_memory_instance = None
+_master_agent_instance = None
+
 def get_memory_instance():
+    """获取LongTermMemory的单例"""
+    global _memory_instance
+    if _memory_instance is None:
+        try:
+            logger.info("Initializing LongTermMemory instance for web app...")
+            _memory_instance = LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
+        except Exception as e:
+            logger.error(f"Failed to initialize LongTermMemory: {e}", exc_info=True)
+    return _memory_instance
+
+def get_master_agent():
+    """获取MasterAgent的单例"""
+    global _master_agent_instance
+    if _master_agent_instance is None:
+        memory = get_memory_instance()
+        if memory:
+            logger.info("Initializing MasterAgent instance for web app...")
+            _master_agent_instance = MasterAgent(memory)
+    return _master_agent_instance
+
+# --- 实例化 ---
+# 在模块加载时就执行实例化，方便其他模块直接使用
+MEMORY = get_memory_instance()
+MASTER_AGENT = get_master_agent()
+
+# --- 仪表盘功能 ---
+def get_dashboard_stats():
+    if not MEMORY: return {"new_memories": 0}
+    
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     try:
-        from src.memory.long_term_memory import LongTermMemory
-        logger.info("Initializing LongTermMemory instance for web app...")
-        return LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
-    except Exception as e:
-        st.error(f"Failed to initialize LongTermMemory: {e}")
-        return None
+        cursor = MEMORY.sqlite_conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM events WHERE start_time >= ?", (today_start,))
+        new_memories = cursor.fetchone()[0]
+    except Exception:
+        new_memories = 0
+        
+    return {"new_memories": new_memories}
 
-@st.cache_resource
-def get_llm_client():
-    logger.info("Initializing OpenAI client instance for web app...")
-    return OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
+def get_entity_count():
+    if not MEMORY: return 0
+    try:
+        cursor = MEMORY.sqlite_conn.cursor()
+        cursor.execute("SELECT COUNT(id) FROM entities")
+        return cursor.fetchone()[0]
+    except Exception:
+        return 0
 
-# --- 知识图谱可视化 ---
-def generate_knowledge_graph_html(limit=200):
-    MEMORY = get_memory_instance()
-    if not MEMORY: return "<div>Backend Error: Memory module not initialized.</div>"
+def get_relation_count():
+    if not MEMORY: return 0
+    try:
+        cursor = MEMORY.sqlite_conn.cursor()
+        cursor.execute("SELECT COUNT(id) FROM relationships")
+        return cursor.fetchone()[0]
+    except Exception:
+        return 0
+
+def get_today_summary():
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    report_path = Path(config.DAILY_REPORTS_PATH) / f"report_{today_str}.md"
+    if report_path.exists():
+        return report_path.read_text(encoding='utf-8')
+    
+    now = datetime.now()
+    if now.hour < 22:
+        return f"正在观察中... 今日报告将于 **22:00** 自动生成。"
+    else:
+        return "今日报告正在生成或生成失败，请稍后查看。"
+
+# --- 问答功能 ---
+def agent_answer_stream(question):
+    if not MASTER_AGENT:
+        yield "错误：后端Agent未初始化。"
+        return
+    
+    # MasterAgent的execute_query本身就是生成器，直接返回
+    return MASTER_AGENT.execute_query(question, lambda x: None)
+
+
+# --- 知识图谱浏览器功能 ---
+def generate_knowledge_graph_html(limit=150, focused_entity=None):
+    if not MEMORY: return "<div>后端错误: 内存模块未初始化.</div>"
     relations = MEMORY.get_all_kg_data(limit=limit)
-    if not relations: return "<div>暂无知识图谱数据。请先让 Agent 运行并观察一些事件。</div>"
+    if not relations: return "<div>暂无知识图谱数据。</div>"
     
     G = nx.DiGraph()
     for r in relations:
         G.add_node(r['source'], group=r['source_type'], title=f"{r['source_type']}: {r['source']}")
         G.add_node(r['target'], group=r['target_type'], title=f"{r['target_type']}: {r['target']}")
-        G.add_edge(r['source'], r['target'], label=r['relation'], title=f"Relation in Event: {r['event_id']}")
+        G.add_edge(r['source'], r['target'], label=r['relation'], title=f"Event: {r['event_id']}")
     
-    net = Network(height="600px", width="100%", notebook=False, directed=True, cdn_resources='remote')
+    net = Network(height="700px", width="100%", notebook=False, directed=True, cdn_resources='remote')
     net.from_nx(G)
+    
+    if focused_entity and focused_entity in G.nodes:
+        for node in net.nodes:
+            if node['id'] == focused_entity:
+                node['color'] = '#FF6347' # Tomato Red
+                node['size'] = 40
+    
     net.set_options("""
     var options = {
-      "nodes": { "font": { "size": 16, "face": "tahoma" }, "borderWidth": 2, "shadow": true },
-      "edges": { "color": { "inherit": true }, "smooth": { "type": "continuous" }, "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } } },
-      "physics": { "forceAtlas2Based": { "gravitationalConstant": -50, "centralGravity": 0.01, "springLength": 100, "springConstant": 0.08 }, "maxVelocity": 50, "solver": "forceAtlas2Based", "timestep": 0.35, "stabilization": { "iterations": 150 } },
+      "nodes": { "font": { "size": 16, "face": "tahoma", "color": "#f0f0f0" }, "borderWidth": 2, "shadow": true },
+      "edges": { "color": { "inherit": "both" }, "smooth": { "type": "continuous" }, "arrows": { "to": { "enabled": true, "scaleFactor": 0.8 } } },
+      "physics": { "forceAtlas2Based": { "gravitationalConstant": -100, "centralGravity": 0.01, "springLength": 100, "springConstant": 0.08 }, "maxVelocity": 50, "solver": "forceAtlas2Based", "timestep": 0.35, "stabilization": { "iterations": 150 } },
       "groups": {
           "Person": { "color": "#FFADAD", "shape": "dot", "size": 25 },
           "Object": { "color": "#A0C4FF", "shape": "box" },
           "Location": { "color": "#9BF699", "shape": "triangle" },
           "Activity": { "color": "#FDFFB6", "shape": "diamond" }
-      }
+      },
+      "interaction": { "navigationButtons": true, "keyboard": true }
     }
     """)
-    
     return net.generate_html(name='temp_graph.html', local=False)
 
-# --- 问答功能 ---
-def answer_question(question):
-    MEMORY = get_memory_instance()
-    LLM_CLIENT = get_llm_client()
-    if not MEMORY or not LLM_CLIENT:
-        yield "错误：后端服务未连接。"
+
+def generate_manual_report(period: str):
+    """根据指定的周期（日报/周报/月报）生成报告"""
+    today = datetime.now().date()
+    if period == "日报":
+        start_date = today
+        end_date = today
+    elif period == "周报":
+        start_date = today - timedelta(days=today.weekday())
+        end_date = today
+    elif period == "月报":
+        start_date = today.replace(day=1)
+        end_date = today
+    else:
+        return "无效的报告周期"
+
+    logging.info(f"--- 手动生成报告任务 ---")
+    logging.info(f"周期: {period}, 时间范围: {start_date} to {end_date}")
+    
+    # 复用之前agent_tasks中的逻辑，这里简化调用
+    from src.app.agent_tasks import DailyScribeAgent # 局部导入
+    scribe = DailyScribeAgent()
+    
+    # 需要修改 DailyScribeAgent 来处理时间段
+    report = scribe.generate_period_summary(start_date, end_date)
+    logging.info("--- 报告生成完毕 ---")
+    return report if report else f"在指定时间范围内没有找到活动记录。"
+
+
+# --- 问答功能 (增加Debug模式) ---
+def agent_answer_stream(query, debug_mode=False):
+    if not MASTER_AGENT:
+        yield "错误：后端Agent未初始化。"
         return
 
-    rich_events = MEMORY.hybrid_search(question, top_k=4)
-    if not rich_events:
-        yield "我的记忆中似乎没有与此相关的信息。"
-        return
+    # BINGO! Debug日志记录器
+    log_stream = []
+    def logger_callback(content):
+        log_stream.append(content)
+        logging.info(f"[Agent Debug] {content.strip()}")
 
-    context_str = "这是基于我记忆检索到的相关事件及其知识图谱细节：\n\n"
-    for i, event in enumerate(rich_events):
-        time_str = datetime.fromtimestamp(event['start_time']).strftime('%Y-%m-%d %H:%M:%S')
-        context_str += f"--- 事件片段 {i+1} [{time_str}] ---\n"
-        context_str += f"【摘要】: {event['summary']}\n"
-        context_str += f"【知识图谱关系】: {event['kg_text']}\n\n"
-
-    system_prompt = "你是一个AI Agent的记忆核心。请基于提供的【记忆上下文】，用自然、流畅的口吻回答用户。利用知识图谱中的细节让回答更智能。如果信息不足，就坦诚说明。"
-    try:
-        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": f"【记忆上下文】\n{context_str}\n\n用户问题: {question}"}]
-        response = LLM_CLIENT.chat.completions.create(model=config.LLM_MODEL_NAME, messages=messages, stream=True, temperature=0.4)
-        for chunk in response:
-            if chunk.choices[0].delta and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-                time.sleep(0.01)
-    except Exception as e:
-        yield f"生成回答时出错: {e}"
-
-# --- 事件流数据获取 (修复图片破图) ---
-def get_recent_events_df(limit=50):
-    MEMORY = get_memory_instance()
-    if not MEMORY: return pd.DataFrame()
+    logging.info(f"--- 开始处理查询: '{query}' (Debug模式: {debug_mode}) ---")
+    response_generator = MASTER_AGENT.execute_query(query, logger_callback)
     
-    cursor = MEMORY.sqlite_conn.cursor()
-    cursor.execute("SELECT start_time, summary, preview_image_path FROM events WHERE preview_image_path IS NOT NULL AND preview_image_path != '' ORDER BY start_time DESC LIMIT ?", (limit,))
-    events_data = [dict(row) for row in cursor.fetchall()]
-    
-    if not events_data:
-        return pd.DataFrame(columns=['Time', 'Summary', 'Preview'])
+    full_response = ""
+    for chunk in response_generator:
+        full_response += chunk
+        
+        # BINGO! 如果开启Debug模式，实时返回日志和回答
+        if debug_mode:
+            debug_info = "```log\n" + "".join(log_stream) + "\n```"
+            yield f"**回答:**\n{full_response}▌\n\n---\n**思考过程:**\n{debug_info}"
+        else:
+            yield full_response + "▌"
 
-    # 将图片路径转换为图片二进制数据
-    for event in events_data:
-        try:
-            with open(event['preview_image_path'], 'rb') as f:
-                event['preview_image_data'] = f.read()
-        except FileNotFoundError:
-            event['preview_image_data'] = None
-            logger.warning(f"Preview image not found at path: {event['preview_image_path']}")
-        except Exception as e:
-            event['preview_image_data'] = None
-            logger.error(f"Error reading preview image {event['preview_image_path']}: {e}")
-
-    df = pd.DataFrame(events_data)
-    df['Time'] = pd.to_datetime(df['start_time'], unit='s').dt.strftime('%Y-%m-%d %H:%M:%S')
-    df.rename(columns={'summary': 'Summary', 'preview_image_data': 'Preview'}, inplace=True)
-    return df[['Time', 'Summary', 'Preview']]
-
-# --- 报告生成功能 (新增) ---
-def generate_summary_report(start_date, end_date):
-    MEMORY = get_memory_instance()
-    LLM_CLIENT = get_llm_client()
-    if not MEMORY or not LLM_CLIENT:
-        return "错误: 后端服务未连接。"
-
-    logger.info(f"开始生成报告，时间范围: {start_date} -> {end_date}")
-
-    start_ts = datetime.combine(start_date, datetime.min.time()).timestamp()
-    end_ts = datetime.combine(end_date, datetime.max.time()).timestamp()
-
-    try:
-        cursor = MEMORY.sqlite_conn.cursor()
-        cursor.execute(
-            "SELECT start_time, summary FROM events WHERE start_time >= ? AND start_time <= ? ORDER BY start_time ASC",
-            (start_ts, end_ts)
-        )
-        events = [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"从SQLite查询事件失败: {e}", exc_info=True)
-        return f"数据库查询失败: {e}"
-
-    if not events:
-        return f"在 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间没有发现任何记忆记录。"
-
-    context_str = f"以下是从 {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')} 期间，按时间顺序记录的所有活动摘要：\n\n"
-    for event in events:
-        event_time = datetime.fromtimestamp(event['start_time']).strftime('%Y-%m-%d %H:%M')
-        context_str += f"- [{event_time}] {event['summary']}\n"
-    
-    report_prompt = f"""
-你是一位专业的家庭生活分析师和日记作者。请将以下在指定时间段内记录的零散活动日志，整合成一份结构清晰、洞察深刻的分析报告。
-
-【活动记录】:
-{context_str}
----
-【你的任务】:
-请生成一份Markdown格式的报告，必须包含以下几个部分：
-
-### 1. 总体摘要 (Summary)
-用一段生动的文字，高度概括这段时间内的主要生活状态和核心活动。
-
-### 2. 主要活动时间线 (Key Activities Timeline)
-以列表形式，列出几个最重要的、有代表性的活动或事件，并简要描述。
-
-### 3. 行为模式与洞察 (Behavioral Patterns & Insights)
-分析是否存在任何有趣的习惯、规律或趋势。例如：
-- 某人是否在特定时间段倾向于做某件事？
-- 主要的活动区域是哪里？
-- 是否有任何与平时不同的“异常”事件？
-
-### 4. 情感与氛围评估 (Mood & Atmosphere Assessment)
-根据事件描述的字里行间，推测这段时间的整体氛围是怎样的（例如：高效、放松、忙碌、平静等），并给出你的理由。
-
-请以客观、关怀的口吻撰写这份报告。
-"""
-    try:
-        logger.info("正在调用LLM生成报告...")
-        response = LLM_CLIENT.chat.completions.create(
-            model=config.LLM_MODEL_NAME,
-            messages=[{"role": "user", "content": report_prompt}],
-            temperature=0.5
-        )
-        report_text = response.choices[0].message.content
-        return report_text
-    except Exception as e:
-        logger.error(f"调用LLM生成报告失败: {e}", exc_info=True)
-        return f"调用大模型生成报告时出错: {e}"
+    # 最终的完整返回
+    logging.info(f"最终回答: {full_response.strip()}")
+    logging.info("--- 查询处理完毕 ---")
+    if debug_mode:
+        debug_info = "```log\n" + "".join(log_stream) + "\n```"
+        yield f"**回答:**\n{full_response}\n\n---\n**思考过程:**\n{debug_info}"
+    else:
+        yield full_response

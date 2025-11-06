@@ -1,144 +1,144 @@
-# tools/app_streamlit.py
+# tools/app_streamlit.py (视图切换终极修正版)
 import streamlit as st
 import sys
 import os
+from datetime import datetime
 import pandas as pd
-import streamlit.components.v1 as components
-from datetime import datetime, timedelta
+import json
 
 # --- 路径设置 & 页面配置 ---
-# 确保无论从哪里运行 streamlit，都能找到 src 目录
+st.set_page_config(page_title="HearthScribe", page_icon="🧠", layout="wide")
+
+# 确保能找到 src 目录
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# BINGO! set_page_config() 必须是第一个 Streamlit 命令
-st.set_page_config(page_title="HearthScribe", page_icon="🔥", layout="wide")
-
-# 在页面配置之后，再安全地导入我们的后端工具
 from src import web_utils
 
-st.title("🔥 HearthScribe 智能中枢")
+# --- 初始化 Session State ---
+if 'view' not in st.session_state:
+    st.session_state.view = "main"  # main, detail, kg_explorer
+if 'selected_event_id' not in st.session_state:
+    st.session_state.selected_event_id = None
+
+# --- 主应用 ---
+st.title("🧠 HearthScribe: 基于文心大模型的个性化家庭记忆助手")
 
 # --- 侧边栏 ---
 with st.sidebar:
-    st.header("系统状态")
-    # 尝试获取实例来检查连接状态
-    if web_utils.get_memory_instance() and web_utils.get_llm_client():
-        st.success("后端服务已连接")
-    else:
-        st.error("后端服务连接失败")
-    
-    if st.button("🔄 刷新数据"):
-        # 清除所有缓存，强制重新加载
-        st.cache_data.clear()
-        st.cache_resource.clear()
+    # BINGO! 添加一个返回主页的按钮
+    if st.button("🏠 返回主页", use_container_width=True):
+        st.session_state.view = "main"
+        st.session_state.selected_event_id = None
         st.rerun()
 
-# --- 主界面 Tab ---
-tab1, tab2, tab3, tab4 = st.tabs(["💬 记忆问答", "🕸️ 知识图谱", "📋 事件流", "📊 总结报告"])
-
-# === Tab 1: 问答 ===
-with tab1:
-    st.subheader("向记忆提问")
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-        
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
-    
-    if prompt := st.chat_input("lizhijun 最近在喝水吗？"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        with st.chat_message("assistant"):
-            response = st.write_stream(web_utils.answer_question(prompt))
-            st.session_state.messages.append({"role": "assistant", "content": response})
-
-# === Tab 2: 知识图谱 ===
-with tab2:
-    st.subheader("全域知识图谱 (可交互)")
-    st.caption("这是 Agent“脑中”所有实体和关系的动态可视化。你可以拖动节点、缩放查看。")
-    limit = st.slider("显示最新的关系数量", 50, 500, 150)
-    
-    with st.spinner("正在构建神经网络..."):
-        graph_html = web_utils.generate_knowledge_graph_html(limit=limit)
-        components.html(graph_html, height=650, scrolling=False)
-
-# === Tab 3: 事件流 (修复图片破图) ===
-with tab3:
-    st.subheader("最近的事件记录")
-    df = web_utils.get_recent_events_df()
-    
-    if not df.empty:
-        st.dataframe(
-            df, 
-            use_container_width=True, 
-            hide_index=True,
-            column_config={
-                "Preview": st.column_config.ImageColumn(
-                    "事件预览", help="事件的第一帧快照"
-                ),
-                "Summary": st.column_config.TextColumn(
-                    "AI 摘要", width="large"
-                )
-            },
-            # 动态调整高度以更好地显示图片
-            height=(len(df) + 1) * 100 if len(df) < 8 else 800 
-        )
-    else:
-        st.warning("暂无事件记录。请先运行 main_collector.py。")
-
-# === Tab 4: 总结报告 (新增) ===
-with tab4:
-    st.subheader("生成生活洞察报告")
-    st.caption("选择一个时间范围，让 AI 为你分析和总结这段时间的生活点滴。")
-
-    # --- 时间范围选择 ---
-    today = datetime.now().date()
-    # 使用 session_state 来保存日期选择，避免快捷按钮后状态丢失
-    if 'start_date' not in st.session_state:
-        st.session_state.start_date = today - timedelta(days=6)
-    if 'end_date' not in st.session_state:
-        st.session_state.end_date = today
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.session_state.start_date = st.date_input("开始日期", st.session_state.start_date)
-    with col2:
-        st.session_state.end_date = st.date_input("结束日期", st.session_state.end_date)
-
-    # --- 快捷按钮 ---
-    st.write("快捷选择：")
-    b_col1, b_col2, b_col3, b_col4 = st.columns(4)
-    if b_col1.button("今日报告", use_container_width=True):
-        st.session_state.start_date = today
-        st.session_state.end_date = today
+    # BINGO! 添加一个跳转到知识图谱的按钮
+    if st.button("🕸️ 探索知识图谱", use_container_width=True):
+        st.session_state.view = "kg_explorer"
         st.rerun()
 
-    if b_col2.button("昨日报告", use_container_width=True):
-        st.session_state.start_date = today - timedelta(days=1)
-        st.session_state.end_date = today - timedelta(days=1)
-        st.rerun()
-
-    if b_col3.button("本周报告", use_container_width=True):
-        st.session_state.start_date = today - timedelta(days=today.weekday())
-        st.session_state.end_date = today
-        st.rerun()
-        
-    if b_col4.button("本月报告", use_container_width=True):
-        st.session_state.start_date = today.replace(day=1)
-        st.session_state.end_date = today
-        st.rerun()
-
-    # --- 生成按钮和报告显示区域 ---
     st.divider()
-    if st.button("🚀 生成分析报告", type="primary", use_container_width=True):
-        if st.session_state.start_date > st.session_state.end_date:
-            st.error("错误：开始日期不能晚于结束日期。")
+    st.header("控制面板")
+    debug_mode = st.toggle("开启Debug模式", help="开启后，问答区将显示Agent的详细思考过程。")
+    st.divider()
+    st.header("手动生成报告")
+    report_period = st.selectbox("选择报告类型", ["日报", "周报", "月报"])
+    if st.button("立即生成报告"):
+        with st.spinner(f"正在生成{report_period}..."):
+            report_content = web_utils.generate_manual_report(report_period)
+            # 将报告直接显示在侧边栏的展开区域中
+            with st.expander("查看报告", expanded=True):
+                st.markdown(report_content)
+
+# --- BINGO! 视图路由 ---
+if st.session_state.view == "main":
+    # --- 主视图 ---
+    # TOP ROW: 今日洞察 & 核心指标
+    with st.container():
+        # ... (这部分代码保持不变) ...
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader("今日自动总结")
+            st.info(web_utils.get_today_summary())
+        with col2:
+            st.subheader("核心运行指标")
+            stats = web_utils.get_dashboard_stats()
+            st.metric("今日新记忆", f"{stats['new_memories']} 条")
+            st.metric("知识实体总数", f"{web_utils.get_entity_count()} 个")
+            st.metric("知识关系总数", f"{web_utils.get_relation_count()} 条")
+    st.divider()
+
+    # MIDDLE ROW: 记忆画廊
+    st.subheader("记忆画廊 (点击“查看详情”深入探索)")
+    recent_events = web_utils.MEMORY.get_rich_event_details(limit=10)
+    if not recent_events:
+        st.warning("暂无记忆事件。")
+    else:
+        # ... (画廊的网格布局代码保持不变) ...
+        num_columns = 5
+        for i in range(0, len(recent_events), num_columns):
+            batch = recent_events[i : i + num_columns]
+            cols = st.columns(num_columns)
+            for j, event in enumerate(batch):
+                with cols[j], st.container(border=True):
+                    st.image(event['preview_image_path'], use_container_width=True)
+                    st.caption(f"_{datetime.fromtimestamp(event['start_time']).strftime('%Y-%m-%d %H:%M')}_")
+                    st.markdown(f"<p style='height: 60px; overflow: hidden; font-size: 14px;'>{event['summary']}</p>", unsafe_allow_html=True)
+                    if st.button("查看详情", key=f"btn_{event['event_id']}", use_container_width=True):
+                        st.session_state.selected_event_id = event['event_id']
+                        st.session_state.view = "detail"
+                        st.rerun()
+    st.divider()
+
+    # BOTTOM ROW: 智能问答
+    st.subheader("💬 智能问答")
+    # ... (问答区域的代码保持不变) ...
+    if "messages" not in st.session_state: st.session_state.messages = []
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]): st.markdown(msg["content"], unsafe_allow_html=True)
+    if prompt := st.chat_input("向我提问..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"): st.markdown(prompt)
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full_response = ""
+            for chunk in web_utils.agent_answer_stream(prompt, debug_mode=debug_mode):
+                full_response = chunk
+                placeholder.markdown(full_response, unsafe_allow_html=True)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+elif st.session_state.view == "detail":
+    # --- 事件详情视图 ---
+    st.subheader("🔍 事件详情")
+    # (这部分代码与之前在Tab里的完全一样)
+    event_details = web_utils.MEMORY.get_rich_event_details([st.session_state.selected_event_id])[0]
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.markdown(f"**事件ID**: `{event_details['event_id']}`")
+        st.markdown(f"**发生时间**: `{datetime.fromtimestamp(event_details['start_time']).strftime('%Y-%m-%d %H:%M:%S')}`")
+        st.info(f"**AI 摘要**: {event_details['summary']}")
+        st.subheader("知识图谱片段")
+        kg_fragment = web_utils.MEMORY.get_kg_for_event(event_details['event_id'])
+        st.dataframe(pd.DataFrame(kg_fragment), use_container_width=True)
+    with col2:
+        st.subheader("事件帧画廊")
+        image_paths = json.loads(event_details.get('image_paths', '[]'))
+        if image_paths: st.image(image_paths, width=150)
+        else: st.warning("此事件没有关联的帧图像。")
+
+elif st.session_state.view == "kg_explorer":
+    # --- 知识图谱浏览器视图 ---
+    st.subheader("🕸️ 知识图谱浏览器")
+    # (这部分代码与之前在Tab里的完全一样)
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        limit = st.slider("加载关系数量", 50, 1000, 200)
+        all_entities_df = pd.DataFrame(web_utils.MEMORY.get_all_kg_data(limit=1000))
+        if not all_entities_df.empty:
+            all_nodes = sorted(list(pd.concat([all_entities_df['source'], all_entities_df['target']]).unique()))
+            focused_entity = st.selectbox("高亮实体", options=[""] + all_nodes)
         else:
-            with st.spinner(f"正在分析从 {st.session_state.start_date} 到 {st.session_state.end_date} 的记忆，请稍候..."):
-                report = web_utils.generate_summary_report(st.session_state.start_date, st.session_state.end_date)
-            
-            st.markdown("---")
-            st.subheader("你的专属生活报告")
-            st.markdown(report, unsafe_allow_html=True) # 允许HTML以便Markdown表格等能正确渲染
+            focused_entity = ""
+    with col2:
+        with st.spinner("正在构建神经网络..."):
+            graph_html = web_utils.generate_knowledge_graph_html(limit=limit, focused_entity=focused_entity)
+            st.components.v1.html(graph_html, height=750, scrolling=False)
