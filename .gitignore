@@ -37,3 +37,9 @@ weights/
 *.db
 .env
 temp_graph.html
+
+notebook_event_images/
+notebook_known_faces/
+notebook_memory_db
+
+get_face.py

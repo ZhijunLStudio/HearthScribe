@@ -93,13 +93,51 @@ def get_today_summary():
         return "今日报告正在生成或生成失败，请稍后查看。"
 
 # --- 问答功能 ---
-def agent_answer_stream(question):
+def agent_answer_stream(query, debug_mode=False):
     if not MASTER_AGENT:
         yield "错误：后端Agent未初始化。"
         return
+
+    log_stream = []
+    def logger_callback(content):
+        log_stream.append(content)
+        logging.info(f"[Agent Debug] {content.strip()}")
+
+    logging.info(f"--- 开始处理查询: '{query}' ---")
     
-    # MasterAgent的execute_query本身就是生成器，直接返回
-    return MASTER_AGENT.execute_query(question, lambda x: None)
+    try:
+        step_generator = MASTER_AGENT.execute_query_steps(query, logger_callback)
+        
+        final_answer = ""
+        for step in step_generator:
+            status = step.get("status")
+            content = step.get("content")
+            evidence = step.get("evidence")
+            
+            output = ""
+            if status == "routing" or status == "retrieving":
+                output = content # 直接显示中间状态
+            elif status == "generating" or status == "done":
+                # 组装完整的最终输出
+                final_answer = content
+                output = f"**综合回答:**\n{final_answer}"
+                if status == "generating":
+                    output += "▌"
+
+                if evidence:
+                    output += "\n\n---\n\n**相关记忆证据:**\n"
+                    for ev in evidence:
+                        output += f"- **[{datetime.fromtimestamp(ev['start_time']).strftime('%Y-%m-%d %H:%M')}]** {ev['summary']}\n"
+            
+            if debug_mode:
+                 output += f"\n\n---\n\n**思考过程:**\n```log\n{''.join(log_stream)}\n```"
+
+            yield output
+            
+    except Exception as e:
+        error_msg = f"处理时发生严重错误: {e}"
+        logging.error(f"问答流出错: {e}", exc_info=True)
+        yield error_msg
 
 
 # --- 知识图谱浏览器功能 ---

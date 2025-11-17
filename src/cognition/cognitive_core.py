@@ -7,6 +7,7 @@ import config
 import logging
 import time
 import re
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +127,12 @@ class CognitiveCore:
             context_prompt = "场景中没有识别出已知人物。"
 
         prompt_task = """
-请生成一段简洁、准确的中文摘要，描述发生了什么。重点关注：
-1. 谁在画面中？(如果名字在已知人物列表中，请使用他们的名字)
-2. 他们在做什么具体的动作？与什么物体进行了交互？
-3. 事件发生的地点或场景是什么？
-摘要应直接描述事实，不要任何开场白或客套话。
-"""
+            请生成一段简洁、准确的中文摘要，描述发生了什么。重点关注：
+            1. 谁在画面中？(如果名字在已知人物列表中，请使用他们的名字)
+            2. 他们在做什么具体的动作？与什么物体进行了交互？
+            3. 事件发生的地点或场景是什么？
+            摘要应直接描述事实，不要任何开场白或客套话。
+            """
         final_prompt = f"{prompt_intro}\n{context_prompt}\n{prompt_task}"
         logger.info(f"Generated LVM prompt with context: {context_prompt}")
         
@@ -150,58 +151,72 @@ class CognitiveCore:
             logger.error(f"LVM call failed: {e}", exc_info=True)
             return None
 
+
     def _extract_knowledge_graph(self, summary_text):
-        # BINGO! --- 这是本次修改的核心 ---
-        # 我们需要将所有用于示例的 `{}` 替换为 `{{}}` 进行转义
+        # BINGO! 终极底线Prompt：纯英文、无复杂格式、零样本指令。
+        # 这将最大限度地避免任何编码或模型解析错误。
         prompt = f"""
-从以下摘要中提取知识图谱。
-实体类型只能是: ["Person", "Object", "Location", "Activity"]
-关系类型尽量简短 (如 "picked_up", "is_in")
-
-【输入摘要】: "{summary_text}"
-
-【输出格式】: 必须是严格合法的JSON对象。JSON必须包含 'entities' 和 'relationships' 两个键。如果找不到任何实体或关系，则返回 `{{"entities": [], "relationships": []}}`。
-请将JSON对象包裹在 markdown 代码块中，像这样: ```json\n{{...}}\n```
-"""
+            Extract entities and relationships from the summary below.
+            
+            Valid entity types are: "Person", "Object", "Location", "Activity".
+            
+            Use this exact format for your output, with no extra text:
+            ENTITIES: name1,type1|name2,type2
+            RELATIONSHIPS: subject1,verb1,object1|subject2,verb2,object2
+            
+            SUMMARY:
+            {summary_text}
+            """
+            
         try:
             t0 = time.time()
             resp = self.llm_client.chat.completions.create(
-                model=config.LLM_MODEL_NAME, 
-                messages=[{"role": "user", "content": prompt}], 
-                temperature=0.1,
-                response_format={"type": "json_object"} 
+                model=config.LLM_MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
             )
             raw_response = resp.choices[0].message.content.strip()
-            logger.info(f"LLM raw response for KG: {raw_response}")
+            logger.info(f"LLM raw response for KG (English-Minimalist Mode): {raw_response}")
 
-            json_str = None
-            match = re.search(r'```json\s*(\{.*?\})\s*```', raw_response, re.DOTALL)
-            if match:
-                json_str = match.group(1)
-                logger.info("Found JSON inside markdown code block.")
-            else:
-                match = re.search(r'(\{.*?\})', raw_response, re.DOTALL)
-                if match:
-                    json_str = match.group(1)
-                    logger.info("Found JSON using non-greedy regex.")
-
-            if json_str:
-                try:
-                    json_str = json_str.strip().replace('\\n', '\n')
-                    json_str = re.sub(r',\s*([\}\]])', r'\1', json_str)
-                    
-                    kg_data = json.loads(json_str)
-                    logger.info(f"KG Extracted in {time.time()-t0:.2f}s. Parsed Data: {json.dumps(kg_data, ensure_ascii=False)}")
-                    return kg_data
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to decode extracted JSON string: {json_str}", exc_info=True)
-                    logger.error(f"JSONDecodeError: {e}")
-                    return None
+            # BINGO! 全新的解析逻辑，以适应新的极简格式。
             
-            logger.error(f"Failed to find any valid JSON in LLM response.")
-            return None
+            # 1. 提取ENTITIES和RELATIONSHIPS的整行字符串
+            entities_line = re.search(r"ENTITIES:\s*(.*)", raw_response)
+            relationships_line = re.search(r"RELATIONSHIPS:\s*(.*)", raw_response)
+            
+            entities_str = entities_line.group(1).strip() if entities_line else ""
+            relationships_str = relationships_line.group(1).strip() if relationships_line else ""
+            
+            final_entities = []
+            final_relationships = []
+
+            # 2. 解析实体字符串
+            if entities_str:
+                pairs = entities_str.split('|')
+                for pair in pairs:
+                    parts = pair.split(',')
+                    if len(parts) == 2:
+                        name = parts[0].strip()
+                        etype = parts[1].strip()
+                        # 做一个简单的类型校验，防止模型乱写
+                        if etype in ["Person", "Object", "Location", "Activity"]:
+                            final_entities.append({"name": name, "type": etype})
+
+            # 3. 解析关系字符串
+            if relationships_str:
+                triplets = relationships_str.split('|')
+                for triplet in triplets:
+                    parts = triplet.split(',')
+                    if len(parts) == 3:
+                        source = parts[0].strip()
+                        verb = parts[1].strip()
+                        target = parts[2].strip()
+                        final_relationships.append({"source": source, "type": verb, "target": target})
+            
+            kg_data = {"entities": final_entities, "relationships": final_relationships}
+            logger.info(f"KG Extracted and parsed in {time.time()-t0:.2f}s. Data: {kg_data}")
+            return kg_data
 
         except Exception as e:
-            # 捕获 ValueError: Invalid format specifier
-            logger.error(f"LLM KG extraction failed. Potentially an f-string issue in the prompt or another error: {e}", exc_info=True)
+            logger.error(f"LLM KG extraction failed with an unexpected error: {e}", exc_info=True)
             return None
