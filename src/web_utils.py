@@ -212,31 +212,58 @@ def agent_answer_stream(query, debug_mode=False):
         yield "错误：后端Agent未初始化。"
         return
 
-    # BINGO! Debug日志记录器
     log_stream = []
     def logger_callback(content):
         log_stream.append(content)
         logging.info(f"[Agent Debug] {content.strip()}")
 
-    logging.info(f"--- 开始处理查询: '{query}' (Debug模式: {debug_mode}) ---")
-    response_generator = MASTER_AGENT.execute_query(query, logger_callback)
+    logging.info(f"--- 开始处理查询: '{query}' ---")
     
-    full_response = ""
-    for chunk in response_generator:
-        full_response += chunk
+    try:
+        # response_generator 现在 yield 的是字典
+        step_generator = MASTER_AGENT.execute_query_steps(query, logger_callback)
         
-        # BINGO! 如果开启Debug模式，实时返回日志和回答
-        if debug_mode:
-            debug_info = "```log\n" + "".join(log_stream) + "\n```"
-            yield f"**回答:**\n{full_response}▌\n\n---\n**思考过程:**\n{debug_info}"
-        else:
-            yield full_response + "▌"
+        # 遍历从 Agent 返回的状态字典
+        for step in step_generator:
+            # 确保 step 是一个字典，防止意外
+            if not isinstance(step, dict):
+                continue
 
-    # 最终的完整返回
-    logging.info(f"最终回答: {full_response.strip()}")
-    logging.info("--- 查询处理完毕 ---")
-    if debug_mode:
-        debug_info = "```log\n" + "".join(log_stream) + "\n```"
-        yield f"**回答:**\n{full_response}\n\n---\n**思考过程:**\n{debug_info}"
-    else:
-        yield full_response
+            status = step.get("status")
+            content = step.get("content")
+            evidence = step.get("evidence")
+            
+            # --- 核心修正：根据字典内容构建输出字符串 ---
+            output_str = ""
+            
+            # 状态为 routing 或 retrieving 时，直接显示中间过程
+            if status == "routing" or status == "retrieving":
+                output_str = content
+            # 状态为 generating 或 done 时，组装最终的回答和证据
+            elif status == "generating" or status == "done":
+                # 如果 content 是最终回答，就格式化
+                if content:
+                    output_str = f"**综合回答:**\n{content}"
+                    if status == "generating":
+                        output_str += "▌" # 添加打字光标效果
+
+                # 如果有证据，也格式化并附加
+                if evidence:
+                    output_str += "\n\n---\n\n**相关记忆证据:**\n"
+                    # 去重，防止重复显示
+                    unique_evidence = {ev['event_id']: ev for ev in evidence}.values()
+                    for ev in unique_evidence:
+                        time_str = datetime.fromtimestamp(ev['start_time']).strftime('%Y-%m-%d %H:%M')
+                        output_str += f"- **[{time_str}]** {ev['summary']}\n"
+            
+            # 如果是 Debug 模式，附加思考过程日志
+            if debug_mode:
+                 output_str += f"\n\n---\n\n**思考过程:**\n```log\n{''.join(log_stream)}\n```"
+
+            # yield 最终格式化好的字符串
+            yield output_str
+            
+    except Exception as e:
+        error_msg = f"处理查询时发生严重错误: {e}"
+        logging.error(f"问答流出错: {e}", exc_info=True)
+        yield error_msg

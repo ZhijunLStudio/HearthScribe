@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- 摄像头与感知配置 ---
-SOURCE_VIDEO = 0  # 如果用文件测试，改为视频路径，如 "./test_video.mp4"
+SOURCE_VIDEO = 0  
 
 # --- 核心采样与处理频率 ---
 PROCESS_INTERVAL = 2 # 主循环稍微快一点，提高响应速度
@@ -34,3 +34,6 @@ KNOWN_FACES_DIR = "./known_faces"           # 已知人脸目录
 
 # --- BINGO! 新增的报告存储路径 ---
 DAILY_REPORTS_PATH = "./daily_reports"      # 每日自动生成报告的存储路径
+
+
+EMBEDDING_MODEL_PATH = "/home/lzj-jetson/work/sentence-transformers/all-MiniLM-L6-v2"
