@@ -52,7 +52,7 @@ class PerceptionProcessor:
 
         # 2. 全图人脸定位
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        all_face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+        all_face_locations = face_recognition.face_locations(rgb_frame, model="cnn")
         
         # 3. 关联人脸和人体
         unassigned_face_locations = list(all_face_locations)
