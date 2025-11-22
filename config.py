@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- 摄像头与感知配置 ---
-SOURCE_VIDEO = 0  # 如果用文件测试，改为视频路径，如 "./test_video.mp4"
+SOURCE_VIDEO = 0 
 
 # --- 核心采样与处理频率 ---
 PROCESS_INTERVAL = 2 # 主循环稍微快一点，提高响应速度
@@ -16,7 +16,7 @@ FRAME_CAPTURE_INTERVAL = 5    # 每5秒抓一帧，减少冗余
 EVENT_INACTIVITY_TIMEOUT = 60 # 60秒无人，事件结束
 EVENT_MAX_DURATION_SECONDS = 300 # 最长5分钟
 
-# --- LVM/LLM API 配置 (请确保在 .env 或这里填入了正确的值) ---
+# --- LVM/LLM API 配置 ---
 # 注意：在最终部署时，这些URL应指向你本地部署的模型服务
 LVM_API_KEY = os.getenv("LVM_API_KEY", "your_api_key_here")
 LVM_BASE_URL = os.getenv("LVM_BASE_URL", "http://localhost:8000/v1")
