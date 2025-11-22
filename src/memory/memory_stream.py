@@ -51,7 +51,7 @@ class MemoryStream:
         logger.info("MemoryStream initialized.")
 
     def update(self, frame, detections):
-        # ... (这个方法保持不变) ...
+        # ... (此方法保持不变) ...
         current_time = time.time()
         
         if detections:
@@ -92,7 +92,7 @@ class MemoryStream:
     def package_event(self):
         """
         打包缓冲区中的帧。
-        BINGO! 所有保存的路径都将转换为绝对路径。
+        改进：优先选择包含已知人物（非Unknown）的帧作为 preview.jpg
         """
         if not self.buffer:
             return None
@@ -104,29 +104,52 @@ class MemoryStream:
         processing_buffer = list(self.buffer)
         self.buffer.clear()
 
+        # =========================================================
+        # BINGO! 新增逻辑：寻找最佳预览帧索引
+        # =========================================================
+        best_preview_index = 0 # 默认为第0帧
+        found_known_person = False
+
+        for idx, data in enumerate(processing_buffer):
+            detections = data.get("detections", [])
+            for det in detections:
+                name = det.get("name", "Unknown")
+                # 如果找到任何一个不是 Unknown 的名字，就锁定这一帧
+                if name != "Unknown":
+                    best_preview_index = idx
+                    found_known_person = True
+                    break
+            if found_known_person:
+                break # 找到了第一张有名字的图，跳出循环
+        
+        if found_known_person:
+            logger.info(f"事件 {event_timestamp}: 预览图已选定为第 {best_preview_index+1} 帧 (包含已知人物)。")
+        else:
+            logger.info(f"事件 {event_timestamp}: 未检测到已知人物，默认使用第 1 帧做预览图。")
+        # =========================================================
+
         packaged_frames = []
         preview_image_path = None
 
         for i, data in enumerate(processing_buffer):
             frame_with_debug_info = draw_debug_info_for_event_frame(data["frame"], data["detections"])
             
-            # 创建 Path 对象
+            # 创建 Path 对象并保存每一帧
             debug_frame_path_obj = event_dir / f"frame_{i+1:03d}.jpg"
             cv2.imwrite(str(debug_frame_path_obj), frame_with_debug_info)
             
-            # 关键修复：将路径转换为绝对路径再存储
             absolute_frame_path = str(debug_frame_path_obj.resolve())
             
             packaged_frames.append({
-                "image_path": absolute_frame_path, # 存储绝对路径
+                "image_path": absolute_frame_path, 
                 "detections": data["detections"],
                 "timestamp": data["timestamp"]
             })
             
-            if i == 0:
+            # 使用上面计算出的 best_preview_index 来决定哪张是 preview.jpg
+            if i == best_preview_index:
                 preview_image_path_obj = event_dir / "preview.jpg"
                 cv2.imwrite(str(preview_image_path_obj), frame_with_debug_info)
-                # 关键修复：同样转换为绝对路径
                 preview_image_path = str(preview_image_path_obj.resolve())
                 
         logger.info(f"打包 {len(packaged_frames)} 帧带调试信息的图像到事件 {event_timestamp}")
@@ -135,5 +158,5 @@ class MemoryStream:
             "frames": packaged_frames,
             "start_time": processing_buffer[0]["timestamp"],
             "end_time": processing_buffer[-1]["timestamp"],
-            "preview_image_path": preview_image_path # 现在这里也是绝对路径
+            "preview_image_path": preview_image_path 
         }

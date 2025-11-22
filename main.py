@@ -23,7 +23,6 @@ frame_lock = threading.Lock()
 is_running = True
 
 def setup_logging():
-    # ... (这个函数保持不变，内容省略)
     log_dir = Path("./logs")
     log_dir.mkdir(exist_ok=True)
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s] - %(message)s')
@@ -39,7 +38,6 @@ def setup_logging():
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def camera_thread_func():
-    # ... (这个函数保持不变，内容省略)
     global latest_frame, is_running
     cap = cv2.VideoCapture(config.SOURCE_VIDEO)
     if not cap.isOpened():
@@ -60,7 +58,6 @@ def camera_thread_func():
     logging.info("摄像头线程已停止。")
 
 def process_event_in_background(packaged_event, cognition, long_term_memory):
-    # ... (这个函数保持不变，内容省略)
     event_id = packaged_event['event_id']
     logging.info(f"🚀 [后台] 开始处理事件 {event_id}")
     try:
@@ -121,7 +118,6 @@ def main_loop():
 
             detections = perception.process_frame(current_frame)
             
-            # BINGO! 恢复了每次循环都打印的日志，方便你观察
             if detections:
                 logging.info(f"感知完成, 检测到 {len(detections)} 个目标: {[d['name'] for d in detections]}")
 

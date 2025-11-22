@@ -1,4 +1,4 @@
-# config.py (完整新代码)
+# config.py
 import os
 from dotenv import load_dotenv
 
@@ -32,5 +32,7 @@ SQLITE_DB_PATH = "./memory_db/knowledge.db" # SQLite 知识图谱路径
 IMAGE_STORAGE_PATH = "./event_images"       # 图片存储路径
 KNOWN_FACES_DIR = "./known_faces"           # 已知人脸目录
 
-# --- BINGO! 新增的报告存储路径 ---
+# --- 报告存储路径 ---
 DAILY_REPORTS_PATH = "./daily_reports"      # 每日自动生成报告的存储路径
+
+EMBEDDING_MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
