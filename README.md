@@ -76,7 +76,7 @@ HearthScribe/
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/HearthScribe.git
+git clone https://github.com/ZhijunLStudio/HearthScribe.git
 cd HearthScribe
 
 # 安装依赖
