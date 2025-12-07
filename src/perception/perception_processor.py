@@ -1,116 +1,101 @@
-# src/perception/perception_processor.py
-import face_recognition
-from pathlib import Path
-import numpy as np
-from ultralytics import YOLO
 import cv2
 import logging
+from paddlex import create_pipeline
+import config
 
 logger = logging.getLogger(__name__)
 
-def is_box_inside(inner_box, outer_box):
-    ix1, iy1, ix2, iy2 = inner_box
-    ox1, oy1, ox2, oy2 = outer_box
-    return ox1 <= ix1 and oy1 <= iy1 and ox2 >= ix2 and oy2 >= iy2
-
 class PerceptionProcessor:
-    def __init__(self, known_faces_dir: str):
-        # ... (初始化代码保持不变) ...
-        logger.info("正在初始化感知处理器...")
-        self.yolo = YOLO("yolov8n.pt")
-        self.known_face_encodings = []
-        self.known_face_names = []
-        self._load_known_faces(Path(known_faces_dir))
-        self.tracked_identities = {}
-        logger.info("感知处理器初始化完成。")
-
-    def _load_known_faces(self, faces_dir: Path):
-        # ... (加载人脸代码保持不变) ...
-        logger.info(f"正在从 {faces_dir} 加载已知人脸...")
-        for person_dir in faces_dir.iterdir():
-            if person_dir.is_dir():
-                for img_path in person_dir.glob("*.jpg*"):
-                    try:
-                        image = face_recognition.load_image_file(str(img_path))
-                        encodings = face_recognition.face_encodings(image)
-                        if encodings:
-                            self.known_face_encodings.append(encodings[0])
-                            self.known_face_names.append(person_dir.name)
-                    except Exception as e:
-                        logger.error(f"加载并编码图片 {img_path} 失败: {e}")
-        logger.info(f"加载完成: {len(self.known_face_names)} 张人脸, {len(set(self.known_face_names))} 位已知人物。")
-
-
-    def process_frame(self, frame):
-        # 1. YOLO 追踪人体
-        yolo_results = self.yolo.track(frame, classes=0, persist=True, verbose=False)
-        if yolo_results[0].boxes.id is None:
-            self.tracked_identities.clear()
-            return []
+    def __init__(self, index_dir):
+        logger.info("🚀 初始化 PaddleX 感知引擎...")
         
-        person_boxes = yolo_results[0].boxes.xyxy.cpu().numpy().astype(int)
-        track_ids = yolo_results[0].boxes.id.cpu().numpy().astype(int)
-
-        # 2. 全图人脸定位
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        all_face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+        # 目标检测
+        logger.info(f"加载目标检测模型: {config.DET_MODEL_NAME}...")
+        self.det_pipeline = create_pipeline(
+            pipeline="object_detection", 
+            device=config.PADDLE_DEVICE
+        )
         
-        # 3. 关联人脸和人体
-        unassigned_face_locations = list(all_face_locations)
-        person_to_face_map = {} # track_id -> face_location
-        for person_box, track_id in zip(person_boxes, track_ids):
-            for i, face_loc in enumerate(unassigned_face_locations):
-                face_box = (face_loc[3], face_loc[0], face_loc[1], face_loc[2]) # (x1, y1, x2, y2)
-                if is_box_inside(face_box, person_box):
-                    person_to_face_map[track_id] = face_loc
-                    unassigned_face_locations.pop(i)
-                    break 
+        # 人脸识别
+        logger.info("加载人脸识别产线...")
+        self.face_pipeline = create_pipeline(
+            pipeline="face_recognition",
+            device=config.PADDLE_DEVICE
+        )
+        self.index_dir = index_dir
         
-        # 4. 对关联上的人脸进行批量编码
-        faces_to_encode_locations = list(person_to_face_map.values())
-        all_face_encodings = face_recognition.face_encodings(rgb_frame, faces_to_encode_locations) if faces_to_encode_locations else []
-        face_loc_to_encoding_map = dict(zip(faces_to_encode_locations, all_face_encodings))
+        # 阈值设置：设低一点，方便调试
+        self.det_threshold = 0.35 
+        self.face_threshold = 0.4
 
-        # 5. 更新身份并准备输出
-        current_frame_detections = []
-        processed_track_ids = set()
-        for person_box, track_id in zip(person_boxes, track_ids):
-            processed_track_ids.add(track_id)
-            name = self.tracked_identities.get(track_id, "Unknown")
+    def process_frame(self, frame_bgr):
+        detections = []
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        # --- Pipeline A: 目标检测 (寻找人体) ---
+        try:
+            # 预测时使用较低阈值，以便我们在日志里看到更多信息
+            det_output = self.det_pipeline.predict(frame_rgb, threshold=self.det_threshold)
             
-            # BINGO! 初始化 face_box_to_draw 为 None
-            face_box_to_draw = None
+            # 用于日志显示的原始检测结果列表
+            raw_detections_log = []
 
-            if (name == "Unknown") and track_id in person_to_face_map:
-                face_loc = person_to_face_map[track_id]
-                face_encoding = face_loc_to_encoding_map.get(face_loc)
+            for res in det_output:
+                res_dict = res.json if hasattr(res, 'json') else res
+                boxes = res_dict.get('boxes', [])
                 
-                if face_encoding is not None:
-                    matches = face_recognition.compare_faces(self.known_face_encodings, face_encoding, tolerance=0.6)
-                    if True in matches:
-                        face_distances = face_recognition.face_distance(self.known_face_encodings, face_encoding)
-                        best_match_index = np.argmin(face_distances)
-                        if matches[best_match_index]:
-                            name = self.known_face_names[best_match_index]
-                            logger.info(f"身份关联成功: Track ID {track_id} -> {name}")
-                    self.tracked_identities[track_id] = name
-            
-            # BINGO! 无论是否识别成功，只要有关联的人脸框，就把它记录下来
-            if track_id in person_to_face_map:
-                face_loc = person_to_face_map[track_id]
-                # 将 (top, right, bottom, left) 转换为 (x1, y1, x2, y2)
-                face_box_to_draw = (face_loc[3], face_loc[0], face_loc[1], face_loc[2])
-            
-            current_frame_detections.append({
-                "track_id": track_id,
-                "box": person_box,          # 人体框
-                "face_box": face_box_to_draw, # 人脸框 (可能为 None)
-                "name": self.tracked_identities.get(track_id, "Unknown")
-            })
+                for box in boxes:
+                    label = box.get('label')
+                    score = box.get('score')
+                    # 把所有检测到的东西（不仅仅是人）都记录到日志里
+                    raw_detections_log.append(f"{label}({score:.2f})")
 
-        # 清理消失的ID
-        disappeared_ids = set(self.tracked_identities.keys()) - processed_track_ids
-        for old_id in disappeared_ids:
-            del self.tracked_identities[old_id]
+                    # 只有 'person' 才会被放入系统的有效检测列表
+                    if label == 'person':
+                        coord = box.get('coordinate')
+                        detections.append({
+                            "type": "person",
+                            "box": [int(c) for c in coord],
+                            "score": score,
+                            "name": "Unknown_Body"
+                        })
             
-        return current_frame_detections
+            # !!! 核心修改：无论是否有人，都打印模型看到了什么 !!!
+            if raw_detections_log:
+                logger.info(f"🔍 [底层视觉] 原始检测: {', '.join(raw_detections_log)}")
+            else:
+                logger.info(f"🔍 [底层视觉] 画面空空如也 (阈值>{self.det_threshold})")
+
+        except Exception as e:
+            logger.warning(f"目标检测失败: {e}")
+
+        # 如果没人，直接返回，不浪费算力跑人脸
+        if not detections:
+            return []
+
+        # --- Pipeline B: 人脸识别 (确定身份) ---
+        try:
+            face_output = self.face_pipeline.predict(frame_rgb, index=self.index_dir)
+            for res in face_output:
+                res_dict = res.json if hasattr(res, 'json') else res
+                boxes = res_dict.get('boxes', [])
+                for box in boxes:
+                    score = box['rec_scores'][0] if box.get('rec_scores') else 0
+                    if score > self.face_threshold:
+                        name = box['labels'][0]
+                        logger.info(f"👤 [身份识别] 确认身份: {name} (置信度: {score:.2f})")
+                        
+                        # 更新 detections
+                        detections.append({
+                            "type": "face",
+                            "box": [int(c) for c in box['coordinate']],
+                            "score": score,
+                            "name": name
+                        })
+                    else:
+                        logger.info(f"👤 [身份识别] 发现人脸但置信度过低 ({score:.2f})")
+
+        except Exception as e:
+            logger.warning(f"人脸识别失败: {e}")
+
+        return detections

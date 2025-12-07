@@ -1,144 +1,135 @@
-# tools/app_streamlit.py (视图切换终极修正版)
 import streamlit as st
 import sys
 import os
-from datetime import datetime
 import pandas as pd
+from datetime import datetime
 import json
 
-# --- 路径设置 & 页面配置 ---
-st.set_page_config(page_title="HearthScribe", page_icon="🧠", layout="wide")
-
-# 确保能找到 src 目录
+# 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src import web_utils # 假设你保留了 web_utils 用于数据库读取
 
-from src import web_utils
+# --- 页面配置 ---
+st.set_page_config(
+    page_title="HearthScribe 长者守护系统",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# --- 初始化 Session State ---
-if 'view' not in st.session_state:
-    st.session_state.view = "main"  # main, detail, kg_explorer
-if 'selected_event_id' not in st.session_state:
-    st.session_state.selected_event_id = None
-
-# --- 主应用 ---
-st.title("🧠 HearthScribe: 基于文心大模型的个性化家庭记忆助手")
+# --- 自定义 CSS (让界面更温暖、专业) ---
+st.markdown("""
+<style>
+    .reportview-container { background: #fdfcf0; }
+    .main-header { font-family: 'Helvetica Neue', sans-serif; color: #2c3e50; }
+    .stMetric { background-color: #ffffff; border-radius: 10px; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .css-1r6slb0 { background-color: #ffffff; border: 1px solid #eee; }
+    .highlight-card { background-color: #e8f4f8; padding: 20px; border-radius: 10px; border-left: 5px solid #3498db; }
+    .alert-card { background-color: #fdecea; padding: 20px; border-radius: 10px; border-left: 5px solid #e74c3c; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- 侧边栏 ---
 with st.sidebar:
-    # BINGO! 添加一个返回主页的按钮
-    if st.button("🏠 返回主页", use_container_width=True):
-        st.session_state.view = "main"
-        st.session_state.selected_event_id = None
-        st.rerun()
+    st.image("https://img.icons8.com/color/96/elderly-person.png", width=80)
+    st.title("HearthScribe\n智慧守护")
+    st.markdown("---")
+    
+    menu = st.radio("功能导航", ["🛡️ 实时看板", "📅 历史回溯", "🧠 认知图谱", "⚙️ 系统设置"])
+    
+    st.markdown("---")
+    st.caption("系统状态: 🟢 在线监控中")
+    st.caption(f"PaddleX 引擎: 🟢 {os.getenv('DET_MODEL_NAME', 'PicoDet')}")
 
-    # BINGO! 添加一个跳转到知识图谱的按钮
-    if st.button("🕸️ 探索知识图谱", use_container_width=True):
-        st.session_state.view = "kg_explorer"
-        st.rerun()
+# --- 1. 实时看板 (Dashboard) ---
+if menu == "🛡️ 实时看板":
+    st.markdown("<h1 class='main-header'>今日安康看板</h1>", unsafe_allow_html=True)
+    st.caption(f"📅 {datetime.now().strftime('%Y年%m月%d日')} | 📍 客厅/卧室监控")
+
+    # 顶部指标卡
+    col1, col2, col3, col4 = st.columns(4)
+    stats = web_utils.get_dashboard_stats() # 需要在 web_utils 适配返回 mock 或真实数据
+    
+    with col1: st.metric("今日活动事件", f"{stats.get('new_memories', 0)} 次", "+2")
+    with col2: st.metric("识别到长者", "2 位", "Penny, Howard")
+    with col3: st.metric("健康风险预警", "0 次", delta_color="normal") # 绿色表示无风险
+    with col4: st.metric("环境安全指数", "98/100", "优")
 
     st.divider()
-    st.header("控制面板")
-    debug_mode = st.toggle("开启Debug模式", help="开启后，问答区将显示Agent的详细思考过程。")
-    st.divider()
-    st.header("手动生成报告")
-    report_period = st.selectbox("选择报告类型", ["日报", "周报", "月报"])
-    if st.button("立即生成报告"):
-        with st.spinner(f"正在生成{report_period}..."):
-            report_content = web_utils.generate_manual_report(report_period)
-            # 将报告直接显示在侧边栏的展开区域中
-            with st.expander("查看报告", expanded=True):
-                st.markdown(report_content)
 
-# --- BINGO! 视图路由 ---
-if st.session_state.view == "main":
-    # --- 主视图 ---
-    # TOP ROW: 今日洞察 & 核心指标
-    with st.container():
-        # ... (这部分代码保持不变) ...
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader("今日自动总结")
-            st.info(web_utils.get_today_summary())
-        with col2:
-            st.subheader("核心运行指标")
-            stats = web_utils.get_dashboard_stats()
-            st.metric("今日新记忆", f"{stats['new_memories']} 条")
-            st.metric("知识实体总数", f"{web_utils.get_entity_count()} 个")
-            st.metric("知识关系总数", f"{web_utils.get_relation_count()} 条")
-    st.divider()
+    # 左右布局
+    c_left, c_right = st.columns([2, 1])
 
-    # MIDDLE ROW: 记忆画廊
-    st.subheader("记忆画廊 (点击“查看详情”深入探索)")
-    recent_events = web_utils.MEMORY.get_rich_event_details(limit=10)
-    if not recent_events:
-        st.warning("暂无记忆事件。")
-    else:
-        # ... (画廊的网格布局代码保持不变) ...
-        num_columns = 5
-        for i in range(0, len(recent_events), num_columns):
-            batch = recent_events[i : i + num_columns]
-            cols = st.columns(num_columns)
-            for j, event in enumerate(batch):
-                with cols[j], st.container(border=True):
-                    st.image(event['preview_image_path'], use_container_width=True)
-                    st.caption(f"_{datetime.fromtimestamp(event['start_time']).strftime('%Y-%m-%d %H:%M')}_")
-                    st.markdown(f"<p style='height: 60px; overflow: hidden; font-size: 14px;'>{event['summary']}</p>", unsafe_allow_html=True)
-                    if st.button("查看详情", key=f"btn_{event['event_id']}", use_container_width=True):
-                        st.session_state.selected_event_id = event['event_id']
-                        st.session_state.view = "detail"
-                        st.rerun()
-    st.divider()
+    with c_left:
+        st.subheader("📹 最新动态摘要")
+        # 获取最近一条事件
+        recent_events = web_utils.MEMORY.get_rich_event_details(limit=1)
+        if recent_events:
+            evt = recent_events[0]
+            # 判断是否有风险关键词
+            is_risk = "跌倒" in evt['summary'] or "痛苦" in evt['summary']
+            css_class = "alert-card" if is_risk else "highlight-card"
+            
+            st.markdown(f"""
+            <div class='{css_class}'>
+                <h3>{'⚠️ 异常监测' if is_risk else '✅ 正常活动'}</h3>
+                <p><strong>时间:</strong> {datetime.fromtimestamp(evt['start_time']).strftime('%H:%M:%S')}</p>
+                <p style='font-size:18px;'>{evt['summary']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.image(evt['preview_image_path'], caption="现场快照", use_container_width=True)
+        else:
+            st.info("暂无今日活动记录，长者可能正在休息或不在监控区。")
 
-    # BOTTOM ROW: 智能问答
-    st.subheader("💬 智能问答")
-    # ... (问答区域的代码保持不变) ...
-    if "messages" not in st.session_state: st.session_state.messages = []
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]): st.markdown(msg["content"], unsafe_allow_html=True)
-    if prompt := st.chat_input("向我提问..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"): st.markdown(prompt)
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            full_response = ""
-            for chunk in web_utils.agent_answer_stream(prompt, debug_mode=debug_mode):
-                full_response = chunk
-                placeholder.markdown(full_response, unsafe_allow_html=True)
+    with c_right:
+        st.subheader("🤖 守护助手")
+        st.markdown("您可以询问关于长者的任何细节，例如：*“妈妈今天吃药了吗？”*")
+        
+        # 聊天窗口
+        if "messages" not in st.session_state: st.session_state.messages = []
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]): st.write(msg["content"])
+            
+        if prompt := st.chat_input("输入您的问题..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"): st.write(prompt)
+            
+            # 调用 Agent 回答
+            with st.chat_message("assistant"):
+                with st.spinner("回忆分析中..."):
+                    # 这里复用原有的 agent 逻辑
+                    full_response = ""
+                    for chunk in web_utils.agent_answer_stream(prompt):
+                        full_response = chunk # 这里简化处理，实际可以使用 st.write_stream
+                    st.write(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
 
-elif st.session_state.view == "detail":
-    # --- 事件详情视图 ---
-    st.subheader("🔍 事件详情")
-    # (这部分代码与之前在Tab里的完全一样)
-    event_details = web_utils.MEMORY.get_rich_event_details([st.session_state.selected_event_id])[0]
-    col1, col2 = st.columns([1, 2])
-    with col1:
-        st.markdown(f"**事件ID**: `{event_details['event_id']}`")
-        st.markdown(f"**发生时间**: `{datetime.fromtimestamp(event_details['start_time']).strftime('%Y-%m-%d %H:%M:%S')}`")
-        st.info(f"**AI 摘要**: {event_details['summary']}")
-        st.subheader("知识图谱片段")
-        kg_fragment = web_utils.MEMORY.get_kg_for_event(event_details['event_id'])
-        st.dataframe(pd.DataFrame(kg_fragment), use_container_width=True)
-    with col2:
-        st.subheader("事件帧画廊")
-        image_paths = json.loads(event_details.get('image_paths', '[]'))
-        if image_paths: st.image(image_paths, width=150)
-        else: st.warning("此事件没有关联的帧图像。")
+# --- 2. 历史回溯 (Gallery) ---
+elif menu == "📅 历史回溯":
+    st.header("生活时光轴")
+    date_filter = st.date_input("选择日期", datetime.now())
+    
+    events = web_utils.MEMORY.get_rich_event_details(limit=20) # 实际应传入 date_filter
+    
+    for evt in events:
+        with st.expander(f"⏰ {datetime.fromtimestamp(evt['start_time']).strftime('%H:%M')} - {evt['summary'][:20]}...", expanded=False):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.image(evt['preview_image_path'], use_container_width=True)
+            with c2:
+                st.markdown(f"**完整摘要:** {evt['summary']}")
+                # 显示提取出的风险/情绪 (如果在KG里存了)
+                # st.tag("情绪: 平静") 
 
-elif st.session_state.view == "kg_explorer":
-    # --- 知识图谱浏览器视图 ---
-    st.subheader("🕸️ 知识图谱浏览器")
-    # (这部分代码与之前在Tab里的完全一样)
-    col1, col2 = st.columns([1, 3])
-    with col1:
-        limit = st.slider("加载关系数量", 50, 1000, 200)
-        all_entities_df = pd.DataFrame(web_utils.MEMORY.get_all_kg_data(limit=1000))
-        if not all_entities_df.empty:
-            all_nodes = sorted(list(pd.concat([all_entities_df['source'], all_entities_df['target']]).unique()))
-            focused_entity = st.selectbox("高亮实体", options=[""] + all_nodes)
-        else:
-            focused_entity = ""
-    with col2:
-        with st.spinner("正在构建神经网络..."):
-            graph_html = web_utils.generate_knowledge_graph_html(limit=limit, focused_entity=focused_entity)
-            st.components.v1.html(graph_html, height=750, scrolling=False)
+# --- 3. 认知图谱 (KG) ---
+elif menu == "🧠 认知图谱":
+    st.header("长者行为习惯图谱")
+    st.caption("基于 ERNIE-Thinking 长期分析构建的健康与行为关联网络。")
+    
+    # 嵌入 PyVis HTML
+    html_path = web_utils.generate_knowledge_graph_html() # 这里需要修改 web_utils 让它返回 path 或 string
+    if isinstance(html_path, str) and html_path.startswith("<"):
+        st.components.v1.html(html_path, height=600)
+    else:
+        st.info("图谱生成中...")

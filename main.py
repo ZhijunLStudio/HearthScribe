@@ -1,145 +1,110 @@
-import cv2
 import time
-from pathlib import Path
 import logging
-import os
-import sys
-from concurrent.futures import ThreadPoolExecutor
 import threading
-
-# --- 路径设置 ---
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
-
-# --- 模块导入 ---
-from perception.perception_processor import PerceptionProcessor
-from memory.memory_stream import MemoryStream
-from memory.long_term_memory import LongTermMemory
-from cognition.cognitive_core import CognitiveCore
+from concurrent.futures import ThreadPoolExecutor
+import cv2
 import config
 
-# --- 全局变量 ---
-latest_frame = None
-frame_lock = threading.Lock()
-is_running = True
+from src.perception.perception_processor import PerceptionProcessor
+from src.memory.memory_stream import MemoryStream
+from src.memory.long_term_memory import LongTermMemory
+from src.cognition.cognitive_core import CognitiveCore
 
-def setup_logging():
-    log_dir = Path("./logs")
-    log_dir.mkdir(exist_ok=True)
-    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s] - %(message)s')
-    file_handler = logging.FileHandler(log_dir / "main_collector.log", mode='a', encoding='utf-8')
-    file_handler.setFormatter(log_formatter)
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(log_formatter)
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(file_handler)
-    root_logger.addHandler(stream_handler)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+# 配置日志输出格式
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def camera_thread_func():
-    global latest_frame, is_running
+def main():
+    logging.info("========================================")
+    logging.info("   HearthScribe 智能看护代理启动中...   ")
+    logging.info("========================================")
+    
+    # 1. 初始化
+    try:
+        perception = PerceptionProcessor(index_dir=config.FACE_INDEX_DIR)
+        memory_stream = MemoryStream(config.IMAGE_STORAGE_PATH)
+        ltm = LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
+        cognition = CognitiveCore()
+        logging.info("✅ 所有核心模块初始化成功。")
+    except Exception as e:
+        logging.critical(f"❌ 初始化失败: {e}", exc_info=True)
+        return
+
+    # 2. 打开摄像头
     cap = cv2.VideoCapture(config.SOURCE_VIDEO)
     if not cap.isOpened():
-        logging.critical("摄像头线程无法打开摄像头。")
-        is_running = False
-        return
-    logging.info("摄像头已成功打开。")
-    time.sleep(1.0) 
-    while is_running:
-        ret, frame = cap.read()
-        if ret:
-            with frame_lock:
-                latest_frame = frame.copy()
-        else:
-            logging.warning("摄像头未能读取到帧。")
-            time.sleep(0.5)
-    cap.release()
-    logging.info("摄像头线程已停止。")
-
-def process_event_in_background(packaged_event, cognition, long_term_memory):
-    event_id = packaged_event['event_id']
-    logging.info(f"🚀 [后台] 开始处理事件 {event_id}")
-    try:
-        result = cognition.analyze_event(packaged_event)
-        if not result or not result.get('summary'):
-             logging.error(f"❌ [后台] 事件 {event_id} 分析失败，摘要为空，将被丢弃！")
-             return
-        success = long_term_memory.save_event(
-            event_data=packaged_event,
-            summary=result['summary'],
-            kg_data=result.get('kg_data')
-        )
-        if success:
-            logging.info(f"✅ [后台] 事件 {event_id} 处理并保存完毕。")
-        else:
-             logging.error(f"❌ [后台] 事件 {event_id} 保存到数据库失败！")
-    except Exception as e:
-        logging.critical(f"💥 [后台] 处理事件 {event_id} 时发生严重错误: {e}", exc_info=True)
-
-
-def main_loop():
-    global is_running
-    setup_logging()
-    logging.info("--- HearthScribe Agent (后台模式) 启动中 ---")
-
-    try:
-        perception = PerceptionProcessor(config.KNOWN_FACES_DIR)
-        short_term_memory = MemoryStream(config.IMAGE_STORAGE_PATH)
-        long_term_memory = LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
-        cognition = CognitiveCore()
-        logging.info("所有模块初始化成功。")
-    except Exception as e:
-        logging.critical(f"模块初始化失败，程序无法启动: {e}", exc_info=True)
+        logging.critical(f"❌ 无法连接摄像头 (ID: {config.SOURCE_VIDEO})")
         return
 
-    executor = ThreadPoolExecutor(max_workers=3)
-    cam_thread = threading.Thread(target=camera_thread_func, daemon=True)
-    cam_thread.start()
-
-    logging.info("等待第一帧图像...")
-    while latest_frame is None and is_running:
-        time.sleep(0.5)
-
-    if not is_running:
-        logging.error("摄像头未能提供图像，程序退出。")
-        return
+    executor = ThreadPoolExecutor(max_workers=2)
+    frame_count = 0
     
-    logging.info("--- 系统已就绪，开始监控 (按 Ctrl+C 停止) ---")
+    # 计算采样间隔 (例如每30帧采一次)
+    PROCESS_INTERVAL_FRAMES = 30 // config.SAMPLE_FPS 
+    if PROCESS_INTERVAL_FRAMES < 1: PROCESS_INTERVAL_FRAMES = 1
+
+    logging.info(f"🎥 监控服务已启动。采样频率: 每 {PROCESS_INTERVAL_FRAMES} 帧分析一次。")
 
     try:
-        while is_running:
-            start_time = time.time()
-            with frame_lock:
-                if latest_frame is None:
-                    time.sleep(0.1)
-                    continue
-                current_frame = latest_frame.copy()
-
-            detections = perception.process_frame(current_frame)
+        while True:
+            ret, frame = cap.read()
+            if not ret: 
+                logging.warning("⚠️ 视频流中断，尝试重连...")
+                time.sleep(1)
+                continue
             
-            if detections:
-                logging.info(f"感知完成, 检测到 {len(detections)} 个目标: {[d['name'] for d in detections]}")
+            # 降频处理
+            if frame_count % PROCESS_INTERVAL_FRAMES == 0:
+                # 打印心跳，证明程序还活着
+                logging.info(f"📸 [Frame {frame_count}] 正在采样分析...")
+                
+                # A. 感知 (PerceptionProcessor 现在会自己打印详细日志)
+                detections = perception.process_frame(frame)
+                
+                if detections:
+                    names = [d['name'] for d in detections if d.get('name')]
+                    logging.info(f"🎯 最终有效目标: {len(detections)} 个 {names}")
+                else:
+                    # 这一行虽然和 Perception 重复，但作为主流程的确认很有必要
+                    logging.info("💨 当前帧无有效人物目标。")
 
-            packaged_event = short_term_memory.update(current_frame, detections)
-
-            if packaged_event:
-                logging.info(f"打包事件 {packaged_event['event_id']} 完成，提交到后台处理。")
-                executor.submit(process_event_in_background, packaged_event, cognition, long_term_memory)
+                # B. 记忆流 (Memory Stream)
+                # 只有当 detections 不为空，或者 MemoryStream 正在录制中时，这里才会有逻辑
+                event_pack = memory_stream.update(frame, detections)
+                
+                # C. 认知分析 (Cognition)
+                if event_pack:
+                    event_id = event_pack['event_id']
+                    duration = event_pack['end_time'] - event_pack['start_time']
+                    logging.info(f"📦 [事件切片] 生成新事件 {event_id} (时长: {duration:.1f}s)，推送到后台分析...")
+                    executor.submit(bg_analyze, event_pack, cognition, ltm)
             
-            elapsed = time.time() - start_time
-            sleep_time = max(0, config.PROCESS_INTERVAL - elapsed)
-            time.sleep(sleep_time)
+            frame_count += 1
+            # 简单的休眠防止空转 CPU 占用过高 (因为没有imshow的阻塞了)
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
-        logging.info("\n检测到用户中断 (Ctrl+C)...")
+        logging.info("\n🛑 接收到退出指令，正在关闭系统...")
     finally:
-        logging.info("正在关闭系统...")
-        is_running = False
-        if cam_thread.is_alive():
-            cam_thread.join()
-        executor.shutdown(wait=True)
-        logging.info("系统已关闭。")
+        cap.release()
+        executor.shutdown(wait=False)
+        logging.info("👋 系统已安全退出。")
+
+def bg_analyze(event, cognition, ltm):
+    """后台分析线程"""
+    eid = event['event_id']
+    logging.info(f"🧠 [后台] 正在调用 ERNIE 模型分析事件 {eid}...")
+    try:
+        result = cognition.analyze_event(event)
+        if result:
+            success = ltm.save_event(event, result['summary'], result['kg_data'])
+            if success:
+                logging.info(f"✅ [入库成功] 事件 {eid}: {result['summary'][:30]}...")
+            else:
+                logging.error(f"❌ [入库失败] 事件 {eid} 数据库写入失败")
+        else:
+            logging.warning(f"⚠️ [分析跳过] 事件 {eid} 未生成有效摘要")
+    except Exception as e:
+        logging.error(f"❌ [后台异常] 事件 {eid} 处理出错: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    main_loop()
+    main()
