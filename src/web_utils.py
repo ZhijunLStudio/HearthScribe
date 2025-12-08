@@ -10,7 +10,7 @@ import re
 import networkx as nx
 from pyvis.network import Network
 
-# 确保能找到src目录
+# Path setup...
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import config
@@ -19,7 +19,7 @@ from src.agent.master_agent import MasterAgent
 
 logger = logging.getLogger(__name__)
 
-# --- 单例模式实例化 ---
+# --- 单例 ---
 _memory_instance = None
 _master_agent_instance = None
 
@@ -27,59 +27,50 @@ def get_memory_instance():
     global _memory_instance
     if _memory_instance is None:
         try:
-            logger.info("Initializing LongTermMemory instance for web app...")
             _memory_instance = LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
         except Exception as e:
-            logger.error(f"Failed to initialize LongTermMemory: {e}", exc_info=True)
+            logger.error(f"Init Memory Failed: {e}")
     return _memory_instance
 
 def get_master_agent():
     global _master_agent_instance
     if _master_agent_instance is None:
-        memory = get_memory_instance()
-        if memory:
-            logger.info("Initializing MasterAgent instance for web app...")
-            _master_agent_instance = MasterAgent(memory)
+        mem = get_memory_instance()
+        if mem: _master_agent_instance = MasterAgent(mem)
     return _master_agent_instance
 
-# --- 全局实例 ---
 MEMORY = get_memory_instance()
 MASTER_AGENT = get_master_agent()
 
-# --- 核心工具函数 ---
-
+# --- 辅助函数 ---
 def parse_summary(raw_summary):
-    """
-    解析扩展摘要，提取文本、标签和评分。
-    输入格式: "摘要文本...|||LABEL:xxx|||SCORE:5"
-    """
-    if not raw_summary: return "", "未知", 0
-    
+    if not raw_summary: return "", "日常", 0
     parts = raw_summary.split("|||")
     text = parts[0]
     label = "日常"
     score = 0
-    
     for p in parts:
-        if p.startswith("LABEL:"): 
-            label = p.replace("LABEL:", "")
+        if p.startswith("LABEL:"): label = p.replace("LABEL:", "")
         if p.startswith("SCORE:"): 
             try: score = int(p.replace("SCORE:", ""))
             except: pass
-            
     return text, label, score
 
-# --- 数据聚合与统计 (Dashboard) ---
-
+# --- 核心：8大指标获取 ---
 def get_dashboard_stats():
-    """获取看板所需的 4 个核心指标"""
+    """获取看板所需的 8 个核心指标"""
     if not MEMORY: return {}
     
+    # 初始化 8 个指标
     stats = {
-        "event_count": 0,
-        "risk_count": 0,
-        "max_inactive_min": 0,
-        "rest_hours": 0.0,
+        "event_count": 0,       # 1. 今日事件数
+        "risk_count": 0,        # 2. 风险预警数
+        "active_hours": 0.0,    # 3. 活跃时长
+        "rest_hours": 0.0,      # 4. 休息时长
+        "max_inactive_min": 0,  # 5. 最大静止间隔
+        "social_count": 0,      # 6. 社交/高频互动数
+        "family_count": 0,      # 7. 家人探访(去重人数)
+        "new_knowledge": 0,     # 8. 今日新知(实体数)
         "last_active": "--:--"
     }
     
@@ -89,7 +80,7 @@ def get_dashboard_stats():
         with MEMORY.db_lock:
             cursor = MEMORY.sqlite_conn.cursor()
             
-            # 1. 获取今日所有事件
+            # --- 查询 A: 事件相关 ---
             cursor.execute("SELECT start_time, end_time, summary FROM events WHERE start_time >= ? ORDER BY start_time", (today_start,))
             rows = cursor.fetchall()
             
@@ -97,44 +88,100 @@ def get_dashboard_stats():
             
             if rows:
                 max_gap = 0
-                rest_sec = 0
-                risk_alerts = 0
                 last_end = rows[0][1]
                 
                 for i, r in enumerate(rows):
                     start, end, summary = r[0], r[1], r[2]
-                    text, label, _ = parse_summary(summary)
+                    text, label, score = parse_summary(summary)
+                    duration = end - start
                     
-                    # 统计风险
-                    if "跌倒" in text or "风险" in label or "求救" in text:
-                        risk_alerts += 1
+                    # 统计逻辑
+                    if "风险" in label or "跌倒" in label or score >= 8:
+                        stats["risk_count"] += 1
+                    
+                    if "躺" in text or "睡" in text or "休息" in label:
+                        stats["rest_hours"] += duration
+                    else:
+                        stats["active_hours"] += duration
                         
-                    # 统计休息 (标签包含单人且文本有睡/躺)
-                    if "躺" in text or "睡" in text or "休息" in text:
-                        rest_sec += (end - start)
+                    if score >= 4: # 假设评分>4算作有互动的社交/护理
+                        stats["social_count"] += 1
                         
-                    # 统计静止间隔
+                    # 静止间隔
                     if i > 0:
                         gap = start - last_end
                         if gap > max_gap: max_gap = gap
                     last_end = end
                 
-                # 当前时刻距离最后一个事件的间隔
+                # 补算当前时刻的静止
                 curr_gap = datetime.now().timestamp() - rows[-1][1]
                 if curr_gap > max_gap: max_gap = curr_gap
                 
                 stats["max_inactive_min"] = int(max_gap / 60)
-                stats["rest_hours"] = round(rest_sec / 3600, 1)
-                stats["risk_count"] = risk_alerts
+                stats["active_hours"] = round(stats["active_hours"] / 3600, 1)
+                stats["rest_hours"] = round(stats["rest_hours"] / 3600, 1)
                 stats["last_active"] = datetime.fromtimestamp(rows[-1][0]).strftime("%H:%M")
+
+            # --- 查询 B: 家人/实体相关 ---
+            # 统计今日涉及的非Unknown人物数量
+            cursor.execute("""
+                SELECT COUNT(DISTINCT e.name) 
+                FROM entities e
+                JOIN relationships r ON e.id = r.source_id OR e.id = r.target_id
+                JOIN events ev ON r.event_id = ev.event_id
+                WHERE ev.start_time >= ? AND e.type = 'Person' AND e.name NOT LIKE '%Unknown%'
+            """, (today_start,))
+            stats["family_count"] = cursor.fetchone()[0]
+
+            # 统计今日新增实体(简单用关联事件时间估算)
+            # 这里简化逻辑：统计今日事件关联的所有实体数
+            cursor.execute("""
+                SELECT COUNT(DISTINCT e.id)
+                FROM entities e
+                JOIN relationships r ON e.id = r.source_id OR e.id = r.target_id
+                JOIN events ev ON r.event_id = ev.event_id
+                WHERE ev.start_time >= ?
+            """, (today_start,))
+            stats["new_knowledge"] = cursor.fetchone()[0]
                 
     except Exception as e:
         logger.error(f"Stats Error: {e}")
         
     return stats
 
+def get_daily_insight_preview():
+    """获取首页顶部的今日洞察摘要"""
+    now = datetime.now()
+    
+    # 逻辑：22点前显示观察中
+    if now.hour < 22:
+        return {
+            "ready": False,
+            "title": "👁️ 空间态势观察中...",
+            "content": f"AI 正在持续分析今日活动。完整日报将于今晚 **22:00** 自动生成。\n目前系统运行正常，已记录 {get_dashboard_stats().get('event_count', 0)} 个事件片段。"
+        }
+    
+    # 22点后：如果没有生成过，现算一个简短的；如果想看详细的去报告页
+    stats = get_dashboard_stats()
+    summary = f"""
+    **📅 今日概览 (自动生成)**
+    
+    截止目前，系统共记录了 **{stats['event_count']}** 个活动片段。
+    重点数据如下：
+    - 活跃时长: {stats['active_hours']} 小时
+    - 休息时长: {stats['rest_hours']} 小时
+    - 风险预警: {stats['risk_count']} 次
+    
+    建议您点击左侧 **[📝 报告生成]** 查看包含详细时间线的完整分析报告。
+    """
+    return {
+        "ready": True,
+        "title": "✅ 今日日报已就绪",
+        "content": summary
+    }
+
 def get_interaction_trend():
-    """获取交互热度曲线数据 (DataFrame)"""
+    """获取交互热度曲线 (Area Chart)"""
     if not MEMORY: return pd.DataFrame()
     today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
     
@@ -153,7 +200,7 @@ def get_interaction_trend():
     return pd.DataFrame(data)
 
 def get_scene_distribution():
-    """获取场景标签分布 (DataFrame)"""
+    """获取场景分布 (Pie Chart)"""
     if not MEMORY: return pd.DataFrame()
     today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
     
@@ -168,8 +215,12 @@ def get_scene_distribution():
         labels.append(label)
         
     if not labels: return pd.DataFrame()
-    df = pd.DataFrame(labels, columns=["Type"])
-    return df["Type"].value_counts().reset_index(name="Count").rename(columns={"index": "Type"}) # Pandas 兼容性写法
+    
+    # 统计并转为 DataFrame
+    from collections import Counter
+    counts = Counter(labels)
+    return pd.DataFrame([{"Type": k, "Count": v} for k, v in counts.items()])
+
 
 def get_person_frequency():
     """获取人员出现频率 (DataFrame)"""
