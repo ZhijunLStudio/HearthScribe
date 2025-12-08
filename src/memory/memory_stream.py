@@ -1,4 +1,3 @@
-# src/memory/memory_stream.py
 import time
 from collections import deque
 import cv2
@@ -6,36 +5,48 @@ from pathlib import Path
 from datetime import datetime
 import logging
 import config
+import json
 
 logger = logging.getLogger(__name__)
 
 def draw_debug_info_for_event_frame(frame, detections):
-    """一个独立的、用于生成事件帧和预览图的绘图函数"""
+    """
+    绘制逻辑：
+    1. 蓝色框: 身体 (Person Body)
+    2. 绿色框: 已知身份的人脸 + 名字
+    3. 红色框: 未知身份的人脸/身体
+    """
     debug_frame = frame.copy()
+    
     for det in detections:
-        person_box = det.get('box')
+        # 1. 画身体框 (Body Box)
+        px1, py1, px2, py2 = map(int, det['box'])
+        name = det.get('name', 'Unknown_Body')
+        
+        # 默认蓝色 (BGR: 255, 0, 0)
+        body_color = (255, 0, 0) 
+        
+        # 画身体矩形
+        cv2.rectangle(debug_frame, (px1, py1), (px2, py2), body_color, 2)
+        
+        # 2. 画人脸框 (Face Box) - 如果有的话
         face_box = det.get('face_box')
-        name = det.get('name', 'Unknown')
-
-        if person_box is not None:
-            px1, py1, px2, py2 = map(int, person_box)
-            person_color = (0, 128, 0) if name != "Unknown" else (0, 0, 128)
-            cv2.rectangle(debug_frame, (px1, py1), (px2, py2), person_color, 1)
-
-        if face_box is not None:
+        if face_box:
             fx1, fy1, fx2, fy2 = map(int, face_box)
-            face_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+            # 已知身份用绿色，未知用红色
+            face_color = (0, 255, 0) if name != "Unknown_Body" else (0, 0, 255)
+            
             cv2.rectangle(debug_frame, (fx1, fy1), (fx2, fy2), face_color, 2)
+            
+            # 标签背景
             label = name
-            label_size, base_line = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
-            cv2.rectangle(debug_frame, (fx1, fy1 - label_size[1] - 10), 
-                          (fx1 + label_size[0], fy1 - 10), face_color, cv2.FILLED)
-            cv2.putText(debug_frame, label, (fx1, fy1 - 12), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
-        elif person_box is not None:
-            px1, py1, _, _ = map(int, person_box)
-            person_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-            cv2.putText(debug_frame, name, (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, person_color, 2)
+            label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(debug_frame, (fx1, fy1 - label_size[1] - 10), (fx1 + label_size[0], fy1), face_color, -1)
+            # 标签文字
+            cv2.putText(debug_frame, label, (fx1, fy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+        else:
+            # 如果没人脸框，但在身体框上标注名字
+            cv2.putText(debug_frame, name, (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, body_color, 2)
             
     return debug_frame
 
@@ -51,112 +62,79 @@ class MemoryStream:
         logger.info("MemoryStream initialized.")
 
     def update(self, frame, detections):
-        # ... (此方法保持不变) ...
         current_time = time.time()
         
+        # 如果有人，或者正在录制中
         if detections:
             if not self.is_capturing:
                 self.is_capturing = True
                 self.buffer.clear()
                 self.event_start_time = current_time
-                logging.info("检测到活动，开始捕获新事件...")
             
             self.last_person_seen_time = current_time
             
+            # 采样
             if current_time - self.last_frame_capture_time >= config.FRAME_CAPTURE_INTERVAL:
                 self.last_frame_capture_time = current_time
                 self.buffer.append({
                     "frame": frame.copy(), "detections": detections, "timestamp": current_time
                 })
             
+            # 强制切分
             if current_time - self.event_start_time >= config.EVENT_MAX_DURATION_SECONDS:
-                logging.info("事件达到最大时长，强制打包。")
-                packaged_event = self.package_event()
-                self.is_capturing = True
+                packaged = self.package_event()
                 self.buffer.clear()
                 self.event_start_time = current_time
-                self.last_frame_capture_time = current_time
-                self.buffer.append({
-                    "frame": frame.copy(), "detections": detections, "timestamp": current_time
-                })
-                return packaged_event
+                return packaged
 
         elif self.is_capturing:
+            # 超时结束
             if current_time - self.last_person_seen_time > config.EVENT_INACTIVITY_TIMEOUT:
-                logging.info("检测到无活动超时，事件结束。")
                 self.is_capturing = False
                 return self.package_event()
         
         return None
 
     def package_event(self):
-        """
-        打包缓冲区中的帧。
-        改进：优先选择包含已知人物（非Unknown）的帧作为 preview.jpg
-        """
-        if not self.buffer:
-            return None
+        if not self.buffer: return None
         
-        event_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        event_dir = self.storage_path / event_timestamp
-        event_dir.mkdir()
+        evt_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        evt_dir = self.storage_path / evt_id
+        evt_dir.mkdir(exist_ok=True)
 
-        processing_buffer = list(self.buffer)
-        self.buffer.clear()
-
-        # =========================================================
-        # BINGO! 新增逻辑：寻找最佳预览帧索引
-        # =========================================================
-        best_preview_index = 0 # 默认为第0帧
-        found_known_person = False
-
-        for idx, data in enumerate(processing_buffer):
-            detections = data.get("detections", [])
-            for det in detections:
-                name = det.get("name", "Unknown")
-                # 如果找到任何一个不是 Unknown 的名字，就锁定这一帧
-                if name != "Unknown":
-                    best_preview_index = idx
-                    found_known_person = True
-                    break
-            if found_known_person:
-                break # 找到了第一张有名字的图，跳出循环
+        frames_info = []
+        preview_path = None
         
-        if found_known_person:
-            logger.info(f"事件 {event_timestamp}: 预览图已选定为第 {best_preview_index+1} 帧 (包含已知人物)。")
-        else:
-            logger.info(f"事件 {event_timestamp}: 未检测到已知人物，默认使用第 1 帧做预览图。")
-        # =========================================================
-
-        packaged_frames = []
-        preview_image_path = None
-
-        for i, data in enumerate(processing_buffer):
-            frame_with_debug_info = draw_debug_info_for_event_frame(data["frame"], data["detections"])
+        # 寻找最佳预览图 (人脸最多的一帧)
+        best_idx = 0
+        max_faces = 0
+        
+        for i, data in enumerate(self.buffer):
+            # 绘图
+            viz_frame = draw_debug_info_for_event_frame(data["frame"], data["detections"])
+            path = evt_dir / f"frame_{i:03d}.jpg"
+            cv2.imwrite(str(path), viz_frame)
             
-            # 创建 Path 对象并保存每一帧
-            debug_frame_path_obj = event_dir / f"frame_{i+1:03d}.jpg"
-            cv2.imwrite(str(debug_frame_path_obj), frame_with_debug_info)
-            
-            absolute_frame_path = str(debug_frame_path_obj.resolve())
-            
-            packaged_frames.append({
-                "image_path": absolute_frame_path, 
+            frames_info.append({
+                "image_path": str(path.resolve()), 
                 "detections": data["detections"],
                 "timestamp": data["timestamp"]
             })
             
-            # 使用上面计算出的 best_preview_index 来决定哪张是 preview.jpg
-            if i == best_preview_index:
-                preview_image_path_obj = event_dir / "preview.jpg"
-                cv2.imwrite(str(preview_image_path_obj), frame_with_debug_info)
-                preview_image_path = str(preview_image_path_obj.resolve())
+            # 评分
+            faces_count = sum(1 for d in data['detections'] if d.get('face_box'))
+            if faces_count >= max_faces:
+                max_faces = faces_count
+                best_idx = i
                 
-        logger.info(f"打包 {len(packaged_frames)} 帧带调试信息的图像到事件 {event_timestamp}")
+        # 生成预览图
+        if frames_info:
+            preview_path = frames_info[best_idx]['image_path']
+
         return {
-            "event_id": event_timestamp,
-            "frames": packaged_frames,
-            "start_time": processing_buffer[0]["timestamp"],
-            "end_time": processing_buffer[-1]["timestamp"],
-            "preview_image_path": preview_image_path 
+            "event_id": evt_id,
+            "frames": frames_info,
+            "start_time": self.buffer[0]["timestamp"],
+            "end_time": self.buffer[-1]["timestamp"],
+            "preview_image_path": preview_path
         }

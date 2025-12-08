@@ -1,110 +1,113 @@
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["KMP_DUPLICATE_LIB_OK"] = "True"
+
 import time
 import logging
-import threading
+import sys
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 import cv2
 import config
 
-from src.perception.perception_processor import PerceptionProcessor
-from src.memory.memory_stream import MemoryStream
-from src.memory.long_term_memory import LongTermMemory
-from src.cognition.cognitive_core import CognitiveCore
-
-# 配置日志输出格式
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# 日志格式
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', handlers=[logging.StreamHandler(sys.stdout)])
 
 def main():
-    logging.info("========================================")
-    logging.info("   HearthScribe 智能看护代理启动中...   ")
-    logging.info("========================================")
-    
-    # 1. 初始化
+    print("\n=== HearthScribe 空间指挥舱启动 ===\n")
+
+    # 1. 初始化模块
     try:
+        from src.perception.perception_processor import PerceptionProcessor
         perception = PerceptionProcessor(index_dir=config.FACE_INDEX_DIR)
+        
+        from src.memory.memory_stream import MemoryStream
         memory_stream = MemoryStream(config.IMAGE_STORAGE_PATH)
+        
+        from src.memory.long_term_memory import LongTermMemory
+        print("  [Init] 正在连接记忆库...")
         ltm = LongTermMemory(config.LANCEDB_PATH, config.SQLITE_DB_PATH)
+        
+        from src.cognition.cognitive_core import CognitiveCore
         cognition = CognitiveCore()
-        logging.info("✅ 所有核心模块初始化成功。")
+        
     except Exception as e:
-        logging.critical(f"❌ 初始化失败: {e}", exc_info=True)
+        print(f"❌ 初始化失败: {e}")
         return
 
-    # 2. 打开摄像头
+    # 2. 摄像头
     cap = cv2.VideoCapture(config.SOURCE_VIDEO)
     if not cap.isOpened():
-        logging.critical(f"❌ 无法连接摄像头 (ID: {config.SOURCE_VIDEO})")
+        print("❌ 摄像头故障")
         return
+    print(f"\n✅ 摄像头就绪 | 采样策略: 每 {config.PROCESS_INTERVAL} 秒检测一次")
 
-    executor = ThreadPoolExecutor(max_workers=2)
+    executor = ThreadPoolExecutor(max_workers=1)
     frame_count = 0
     
-    # 计算采样间隔 (例如每30帧采一次)
-    PROCESS_INTERVAL_FRAMES = 30 // config.SAMPLE_FPS 
-    if PROCESS_INTERVAL_FRAMES < 1: PROCESS_INTERVAL_FRAMES = 1
-
-    logging.info(f"🎥 监控服务已启动。采样频率: 每 {PROCESS_INTERVAL_FRAMES} 帧分析一次。")
+    # 假设 FPS=30
+    SKIP_FRAMES = int(30 * config.PROCESS_INTERVAL)
+    if SKIP_FRAMES < 1: SKIP_FRAMES = 1
 
     try:
         while True:
             ret, frame = cap.read()
             if not ret: 
-                logging.warning("⚠️ 视频流中断，尝试重连...")
-                time.sleep(1)
+                time.sleep(0.5)
                 continue
             
-            # 降频处理
-            if frame_count % PROCESS_INTERVAL_FRAMES == 0:
-                # 打印心跳，证明程序还活着
-                logging.info(f"📸 [Frame {frame_count}] 正在采样分析...")
+            if frame_count % SKIP_FRAMES == 0:
+                current_time_str = datetime.now().strftime("%H:%M:%S")
                 
-                # A. 感知 (PerceptionProcessor 现在会自己打印详细日志)
+                # A. 感知
                 detections = perception.process_frame(frame)
                 
-                if detections:
-                    names = [d['name'] for d in detections if d.get('name')]
-                    logging.info(f"🎯 最终有效目标: {len(detections)} 个 {names}")
-                else:
-                    # 这一行虽然和 Perception 重复，但作为主流程的确认很有必要
-                    logging.info("💨 当前帧无有效人物目标。")
-
-                # B. 记忆流 (Memory Stream)
-                # 只有当 detections 不为空，或者 MemoryStream 正在录制中时，这里才会有逻辑
+                # B. 反馈状态
+                if not detections:
+                    print(f"[{current_time_str}] 💤 空间闲置中...", end='\r')
+                
+                # C. 记忆流处理
                 event_pack = memory_stream.update(frame, detections)
                 
-                # C. 认知分析 (Cognition)
+                # D. 事件打包 -> 后台分析
                 if event_pack:
-                    event_id = event_pack['event_id']
                     duration = event_pack['end_time'] - event_pack['start_time']
-                    logging.info(f"📦 [事件切片] 生成新事件 {event_id} (时长: {duration:.1f}s)，推送到后台分析...")
+                    print(f"\n📦 [{current_time_str}] 生成事件片段 ({duration:.1f}s) -> 提交大脑分析")
                     executor.submit(bg_analyze, event_pack, cognition, ltm)
-            
+
             frame_count += 1
-            # 简单的休眠防止空转 CPU 占用过高 (因为没有imshow的阻塞了)
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-        logging.info("\n🛑 接收到退出指令，正在关闭系统...")
+        print("\n🛑 系统停止")
     finally:
         cap.release()
         executor.shutdown(wait=False)
-        logging.info("👋 系统已安全退出。")
 
 def bg_analyze(event, cognition, ltm):
-    """后台分析线程"""
-    eid = event['event_id']
-    logging.info(f"🧠 [后台] 正在调用 ERNIE 模型分析事件 {eid}...")
+    """后台分析线程：负责连接认知与记忆"""
     try:
+        # 1. 调用认知核心 (返回包含 score/label 的字典)
         result = cognition.analyze_event(event)
+        
         if result:
-            success = ltm.save_event(event, result['summary'], result['kg_data'])
+            # 2. 存入长期记忆 (传入新字段)
+            success = ltm.save_event(
+                event_data=event, 
+                summary=result['summary'], 
+                kg_data=result['kg_data'],
+                # 关键修改：传递新字段
+                scene_label=result.get('scene_label'),
+                interaction_score=result.get('interaction_score')
+            )
+            
             if success:
-                logging.info(f"✅ [入库成功] 事件 {eid}: {result['summary'][:30]}...")
+                print(f"💾 [入库] 场景:{result.get('scene_label')} | 评分:{result.get('interaction_score')} | 摘要:{result['summary'][:20]}...")
             else:
-                logging.error(f"❌ [入库失败] 事件 {eid} 数据库写入失败")
-        else:
-            logging.warning(f"⚠️ [分析跳过] 事件 {eid} 未生成有效摘要")
+                print("❌ [入库] 数据库写入失败")
+                
     except Exception as e:
-        logging.error(f"❌ [后台异常] 事件 {eid} 处理出错: {e}", exc_info=True)
+        print(f"❌ [后台异常] {e}")
 
 if __name__ == "__main__":
     main()

@@ -2,134 +2,224 @@ import streamlit as st
 import sys
 import os
 import pandas as pd
+import altair as alt
 from datetime import datetime
 import json
 
 # 添加路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src import web_utils # 假设你保留了 web_utils 用于数据库读取
+from src import web_utils
 
 # --- 页面配置 ---
 st.set_page_config(
-    page_title="HearthScribe 长者守护系统",
-    page_icon="🛡️",
+    page_title="HearthScribe",
+    page_icon="🏠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- 自定义 CSS (让界面更温暖、专业) ---
+# --- CSS 美化 ---
 st.markdown("""
 <style>
-    .reportview-container { background: #fdfcf0; }
-    .main-header { font-family: 'Helvetica Neue', sans-serif; color: #2c3e50; }
-    .stMetric { background-color: #ffffff; border-radius: 10px; padding: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .css-1r6slb0 { background-color: #ffffff; border: 1px solid #eee; }
-    .highlight-card { background-color: #e8f4f8; padding: 20px; border-radius: 10px; border-left: 5px solid #3498db; }
-    .alert-card { background-color: #fdecea; padding: 20px; border-radius: 10px; border-left: 5px solid #e74c3c; }
+    .stApp { background-color: #f8f9fa; }
+    
+    /* 顶部卡片样式 */
+    div[data-testid="stMetric"] {
+        background-color: white;
+        padding: 15px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border-left: 4px solid #6c757d;
+    }
+    /* 不同卡片不同色 */
+    div[data-testid="stMetric"]:nth-of-type(1) { border-left-color: #e74c3c; } /* 红 */
+    div[data-testid="stMetric"]:nth-of-type(2) { border-left-color: #f39c12; } /* 黄 */
+    div[data-testid="stMetric"]:nth-of-type(3) { border-left-color: #3498db; } /* 蓝 */
+    div[data-testid="stMetric"]:nth-of-type(4) { border-left-color: #2ecc71; } /* 绿 */
+    
+    /* 时间轴列表 */
+    .timeline-item {
+        background: white;
+        padding: 10px;
+        margin-bottom: 8px;
+        border-radius: 6px;
+        border-left: 3px solid #ddd;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 侧边栏 ---
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/elderly-person.png", width=80)
-    st.title("HearthScribe\n智慧守护")
+    st.title("HearthScribe")
+    st.caption("AI 智能看护系统 v2.0")
     st.markdown("---")
     
-    menu = st.radio("功能导航", ["🛡️ 实时看板", "📅 历史回溯", "🧠 认知图谱", "⚙️ 系统设置"])
+    nav = st.radio("系统导航", ["🏠 态势看板", "📽️ 影像回溯", "📝 报告生成", "🕸️ 认知图谱", "🤖 智能助手"])
     
     st.markdown("---")
-    st.caption("系统状态: 🟢 在线监控中")
-    st.caption(f"PaddleX 引擎: 🟢 {os.getenv('DET_MODEL_NAME', 'PicoDet')}")
+    # 系统硬指标 (实时查询)
+    sys_stats = web_utils.get_system_stats()
+    c1, c2 = st.columns(2)
+    with c1: st.metric("记忆库", sys_stats['memory'])
+    with c2: st.metric("实体数", sys_stats['entities'])
+    st.metric("累计看护", sys_stats['care_hours'])
 
-# --- 1. 实时看板 (Dashboard) ---
-if menu == "🛡️ 实时看板":
-    st.markdown("<h1 class='main-header'>今日安康看板</h1>", unsafe_allow_html=True)
-    st.caption(f"📅 {datetime.now().strftime('%Y年%m月%d日')} | 📍 客厅/卧室监控")
-
-    # 顶部指标卡
-    col1, col2, col3, col4 = st.columns(4)
-    stats = web_utils.get_dashboard_stats() # 需要在 web_utils 适配返回 mock 或真实数据
+# --- 1. 态势看板 ---
+if nav == "🏠 态势看板":
+    st.header("☀️ 今日空间态势")
     
-    with col1: st.metric("今日活动事件", f"{stats.get('new_memories', 0)} 次", "+2")
-    with col2: st.metric("识别到长者", "2 位", "Penny, Howard")
-    with col3: st.metric("健康风险预警", "0 次", delta_color="normal") # 绿色表示无风险
-    with col4: st.metric("环境安全指数", "98/100", "优")
-
-    st.divider()
-
-    # 左右布局
-    c_left, c_right = st.columns([2, 1])
-
-    with c_left:
-        st.subheader("📹 最新动态摘要")
-        # 获取最近一条事件
-        recent_events = web_utils.MEMORY.get_rich_event_details(limit=1)
-        if recent_events:
-            evt = recent_events[0]
-            # 判断是否有风险关键词
-            is_risk = "跌倒" in evt['summary'] or "痛苦" in evt['summary']
-            css_class = "alert-card" if is_risk else "highlight-card"
-            
-            st.markdown(f"""
-            <div class='{css_class}'>
-                <h3>{'⚠️ 异常监测' if is_risk else '✅ 正常活动'}</h3>
-                <p><strong>时间:</strong> {datetime.fromtimestamp(evt['start_time']).strftime('%H:%M:%S')}</p>
-                <p style='font-size:18px;'>{evt['summary']}</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            st.image(evt['preview_image_path'], caption="现场快照", use_container_width=True)
+    # 1. 核心指标卡片
+    data = web_utils.get_dashboard_stats()
+    
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.metric("⚠️ 风险预警", f"{data.get('risk_count',0)}", "次")
+    with c2: st.metric("⏱️ 最大静止", f"{data.get('max_inactive_min',0)}", "分钟")
+    with c3: st.metric("🛌 休息时长", f"{data.get('rest_hours',0)}", "小时")
+    with c4: st.metric("📸 今日事件", f"{data.get('event_count',0)}", f"最新: {data.get('last_active','--')}")
+    
+    st.markdown("---")
+    
+    # 2. 图表区
+    # 左侧：趋势图 (宽)
+    # 右侧：饼图 + 柱状图 (上下排布)
+    c_main, c_side = st.columns([2, 1])
+    
+    with c_main:
+        st.subheader("📈 交互活跃度趋势")
+        df_trend = web_utils.get_interaction_trend()
+        if not df_trend.empty:
+            chart = alt.Chart(df_trend).mark_area(
+                line={'color':'#3498db'},
+                color=alt.Gradient(
+                    gradient='linear',
+                    stops=[alt.GradientStop(color='white', offset=0), alt.GradientStop(color='#3498db', offset=1)],
+                    x1=1, x2=1, y1=1, y2=0
+                )
+            ).encode(
+                x=alt.X('Time', title='时刻'),
+                y=alt.Y('Score', title='活跃度 (0-10)'),
+                tooltip=['Time', 'Score']
+            ).properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
         else:
-            st.info("暂无今日活动记录，长者可能正在休息或不在监控区。")
+            st.info("今日暂无交互数据，图表待生成...")
 
-    with c_right:
-        st.subheader("🤖 守护助手")
-        st.markdown("您可以询问关于长者的任何细节，例如：*“妈妈今天吃药了吗？”*")
-        
-        # 聊天窗口
-        if "messages" not in st.session_state: st.session_state.messages = []
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]): st.write(msg["content"])
+    with c_side:
+        # 饼图：场景分布
+        st.subheader("🍰 场景分布")
+        df_scene = web_utils.get_scene_distribution()
+        if not df_scene.empty:
+            pie = alt.Chart(df_scene).mark_arc(innerRadius=50).encode(
+                theta=alt.Theta("Count", stack=True),
+                color=alt.Color("Type", scale={"scheme": "pastel1"}),
+                tooltip=["Type", "Count"]
+            ).properties(height=200)
+            st.altair_chart(pie, use_container_width=True)
+        else:
+            st.caption("暂无数据")
             
-        if prompt := st.chat_input("输入您的问题..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"): st.write(prompt)
-            
-            # 调用 Agent 回答
-            with st.chat_message("assistant"):
-                with st.spinner("回忆分析中..."):
-                    # 这里复用原有的 agent 逻辑
-                    full_response = ""
-                    for chunk in web_utils.agent_answer_stream(prompt):
-                        full_response = chunk # 这里简化处理，实际可以使用 st.write_stream
-                    st.write(full_response)
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+        # 柱状图：人员频率
+        st.subheader("👥 人员频率")
+        df_person = web_utils.get_person_frequency()
+        if not df_person.empty:
+            bar = alt.Chart(df_person).mark_bar().encode(
+                x='Count',
+                y=alt.Y('Name', sort='-x'),
+                color=alt.Color("Name", scale={"scheme": "set2"})
+            ).properties(height=200)
+            st.altair_chart(bar, use_container_width=True)
+        else:
+            st.caption("暂无人员数据")
 
-# --- 2. 历史回溯 (Gallery) ---
-elif menu == "📅 历史回溯":
-    st.header("生活时光轴")
-    date_filter = st.date_input("选择日期", datetime.now())
+# --- 2. 影像回溯 (修复详情页) ---
+elif nav == "📽️ 影像回溯":
+    st.header("📅 历史影像归档")
     
-    events = web_utils.MEMORY.get_rich_event_details(limit=20) # 实际应传入 date_filter
+    # 获取数据
+    events = web_utils.MEMORY.get_rich_event_details(limit=50)
     
-    for evt in events:
-        with st.expander(f"⏰ {datetime.fromtimestamp(evt['start_time']).strftime('%H:%M')} - {evt['summary'][:20]}...", expanded=False):
-            c1, c2 = st.columns([1, 2])
-            with c1:
-                st.image(evt['preview_image_path'], use_container_width=True)
-            with c2:
-                st.markdown(f"**完整摘要:** {evt['summary']}")
-                # 显示提取出的风险/情绪 (如果在KG里存了)
-                # st.tag("情绪: 平静") 
-
-# --- 3. 认知图谱 (KG) ---
-elif menu == "🧠 认知图谱":
-    st.header("长者行为习惯图谱")
-    st.caption("基于 ERNIE-Thinking 长期分析构建的健康与行为关联网络。")
-    
-    # 嵌入 PyVis HTML
-    html_path = web_utils.generate_knowledge_graph_html() # 这里需要修改 web_utils 让它返回 path 或 string
-    if isinstance(html_path, str) and html_path.startswith("<"):
-        st.components.v1.html(html_path, height=600)
+    if not events:
+        st.info("暂无历史影像数据。")
     else:
-        st.info("图谱生成中...")
+        # 构造选择项
+        evt_map = {f"{datetime.fromtimestamp(e['start_time']).strftime('%H:%M')} - {e['summary'][:30]}...": e for e in events}
+        selected_label = st.selectbox("请选择一个事件查看详情:", list(evt_map.keys()))
+        
+        if selected_label:
+            evt = evt_map[selected_label]
+            txt, lbl, score = web_utils.parse_summary(evt['summary'])
+            
+            st.markdown("---")
+            c_meta, c_imgs = st.columns([1, 2])
+            
+            with c_meta:
+                st.info(f"**AI 观察**: {txt}")
+                st.write(f"**发生时间**: {datetime.fromtimestamp(evt['start_time']).strftime('%Y-%m-%d %H:%M:%S')}")
+                st.write(f"**场景标签**: `{lbl}`")
+                st.write(f"**活跃评分**: `{score}/10`")
+                
+            with c_imgs:
+                st.subheader("📸 抓拍序列")
+                try:
+                    paths = json.loads(evt['image_paths'])
+                    if paths:
+                        # 使用 Tabs 展示多张图，避免刷屏
+                        tabs = st.tabs([f"帧 {i+1}" for i in range(len(paths))])
+                        for i, p in enumerate(paths):
+                            if os.path.exists(p):
+                                tabs[i].image(p, use_container_width=True)
+                            else:
+                                tabs[i].warning("图片文件丢失")
+                except:
+                    st.error("图片路径解析失败")
+
+# --- 3. 报告生成 (回归) ---
+elif nav == "📝 报告生成":
+    st.header("📋 智能报告中心")
+    
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        d = st.date_input("选择日期", datetime.now())
+        if st.button("🚀 生成报告", use_container_width=True):
+            with st.spinner("正在生成 Markdown 报告..."):
+                report_md = web_utils.generate_daily_report_content(d)
+                st.session_state['report_md'] = report_md # 缓存结果
+                
+    with col2:
+        if 'report_md' in st.session_state:
+            st.markdown("### 预览")
+            st.markdown(st.session_state['report_md'])
+            st.download_button("📥 下载 .md 文件", st.session_state['report_md'], f"report_{d}.md")
+
+# --- 4. 认知图谱 ---
+elif nav == "🕸️ 认知图谱":
+    st.header("🧠 空间认知网络")
+    html = web_utils.generate_kg_html()
+    # 使用 scrolling=True 允许图谱缩放
+    st.components.v1.html(html, height=700, scrolling=True)
+
+# --- 5. 智能助手 ---
+elif nav == "🤖 智能助手":
+    st.header("💬 关怀问答")
+    
+    if "chat_history" not in st.session_state: 
+        st.session_state.chat_history = []
+    
+    # 渲染历史
+    for role, text in st.session_state.chat_history:
+        with st.chat_message(role): st.markdown(text)
+        
+    # 输入处理
+    if q := st.chat_input("您可以问：今天有人跌倒吗？爷爷什么时候吃的药？"):
+        st.session_state.chat_history.append(("user", q))
+        with st.chat_message("user"): st.markdown(q)
+        
+        with st.chat_message("assistant"):
+            ph = st.empty()
+            full_resp = ""
+            for chunk in web_utils.agent_answer_stream(q):
+                full_resp = chunk
+                ph.markdown(full_resp + "▌") # 打字机效果
+            ph.markdown(full_resp)
+            st.session_state.chat_history.append(("assistant", full_resp))
