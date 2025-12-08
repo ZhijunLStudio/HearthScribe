@@ -1,3 +1,4 @@
+# src/web_utils.py
 import logging
 import sqlite3
 import pandas as pd
@@ -225,55 +226,110 @@ def agent_answer_stream(query):
             yield step['content']
 
 def generate_daily_report_content(date_obj=None):
-    """生成 Markdown 日报"""
-    if not MEMORY: return "No Data"
+    """
+    生成真正的 AI 叙述性日报
+    """
+    if not MEMORY: return "系统未初始化"
     if not date_obj: date_obj = datetime.now()
     
     start_ts = datetime.combine(date_obj, datetime.min.time()).timestamp()
     end_ts = datetime.combine(date_obj, datetime.max.time()).timestamp()
     
-    # 注意：这里调用的是 LongTermMemory 新补全的 get_events_for_period
+    # 1. 获取原始数据
     events = MEMORY.get_events_for_period(start_ts, end_ts)
-    
-    if not events: return f"## 📅 {date_obj.strftime('%Y-%m-%d')} 报告\n\n当日无记录。"
-    
-    md = [f"# 📅 {date_obj.strftime('%Y-%m-%d')} 智能看护报告\n"]
-    md.append(f"**生成时间**: {datetime.now().strftime('%H:%M:%S')}\n")
-    md.append(f"**事件总数**: {len(events)}\n")
-    md.append("## 📝 详细时间线")
-    
+    if not events: return f"# 📅 {date_obj.strftime('%Y-%m-%d')} 报告\n\n今日无活动记录。"
+
+    # 2. 构建上下文给大模型
+    context_lines = []
     for e in events:
         t = datetime.fromtimestamp(e['start_time']).strftime('%H:%M')
-        txt, lbl, _ = parse_summary(e['summary'])
-        md.append(f"- **{t}** `[{lbl}]` {txt}")
-        
-    return "\n".join(md)
+        txt, label, _ = parse_summary(e['summary'])
+        context_lines.append(f"- [{t}] ({label}) {txt}")
+    
+    context_str = "\n".join(context_lines)
+    
+    # 3. 调用 MasterAgent 生成报告 (或者直接调 OpenAI)
+    prompt = f"""
+    你是一名专业的家庭看护助理。请根据以下今日的活动流水，写一份 Markdown 格式的日报。
+    
+    要求：
+    1. 使用一级标题：📅 {date_obj.strftime('%Y-%m-%d')} 看护日报
+    2. 包含“今日概览”、“详细活动”、“风险提示”三个板块。
+    3. 语气温暖、客观。
+    4. 重点关注老人的活动频率、休息情况和是否有异常。
+    
+    【活动流水】：
+    {context_str}
+    """
+    
+    try:
+        if MASTER_AGENT:
+            # 复用 MasterAgent 的 client
+            resp = MASTER_AGENT.llm_client.chat.completions.create(
+                model=config.AI_THINKING_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5
+            )
+            return resp.choices[0].message.content
+        else:
+            return "Agent 未就绪，无法生成报告。"
+    except Exception as e:
+        logger.error(f"报告生成失败: {e}")
+        return f"报告生成出错: {e}\n\n原始数据:\n{context_str}"
 
 def generate_kg_html():
-    """生成知识图谱 HTML"""
-    if not MEMORY: return "<div>No Data</div>"
-    relations = MEMORY.get_all_kg_data(limit=300)
+    """生成增强版知识图谱 HTML"""
+    if not MEMORY: return "<div>Memory Module Error</div>"
+    
+    # 获取数据
+    relations = MEMORY.get_all_kg_data(limit=500)
+    
+    # 如果数据为空，返回提示
+    if not relations:
+        return """
+        <div style='text-align:center; padding: 50px; color: #666;'>
+            <h3>🕸️ 暂无知识图谱数据</h3>
+            <p>请先运行系统并等待事件分析完成。</p>
+        </div>
+        """
     
     G = nx.DiGraph()
     for r in relations:
-        src = r.get('source', 'Unknown')
-        tgt = r.get('target', 'Unknown')
-        rel = r.get('relation', 'related')
+        src = r.get('source', '未知').strip()
+        tgt = r.get('target', '未知').strip()
+        rel = r.get('relation', '关联').strip()
         
-        # 简单分组颜色
-        G.add_node(src, title=src, group=r.get('source_type', 'Object'))
-        G.add_node(tgt, title=tgt, group=r.get('target_type', 'Object'))
-        G.add_edge(src, tgt, label=rel)
+        if not src or not tgt: continue
+        
+        # 根据类型设置颜色
+        src_type = r.get('source_type', 'Object')
+        tgt_type = r.get('target_type', 'Object')
+        
+        color_map = {
+            "Person": "#ff7675", # 红
+            "Object": "#74b9ff", # 蓝
+            "Location": "#55efc4", # 绿
+            "Activity": "#ffeaa7"  # 黄
+        }
+        
+        G.add_node(src, label=src, color=color_map.get(src_type, "#dfe6e9"), title=src_type)
+        G.add_node(tgt, label=tgt, color=color_map.get(tgt_type, "#dfe6e9"), title=tgt_type)
+        G.add_edge(src, tgt, label=rel, color="#b2bec3")
     
-    # PyVis 配置
-    net = Network(height="600px", width="100%", notebook=False, cdn_resources='remote', directed=True)
+    net = Network(height="650px", width="100%", notebook=False, cdn_resources='remote', directed=True)
     net.from_nx(G)
     
-    # 强制设置物理引擎参数，防止白屏
+    # 物理引擎配置：防止爆炸和空白
     net.set_options("""
     var options = {
-      "nodes": { "font": { "size": 16 } },
-      "physics": { "forceAtlas2Based": { "gravitationalConstant": -50, "springLength": 100 } }
+      "nodes": { "font": { "size": 14, "face": "arial" }, "borderWidth": 1 },
+      "edges": { "font": { "size": 10, "align": "middle" }, "arrows": { "to": { "enabled": true, "scaleFactor": 0.5 } } },
+      "physics": { 
+          "enabled": true,
+          "forceAtlas2Based": { "gravitationalConstant": -50, "centralGravity": 0.01, "springLength": 100, "damping": 0.4 },
+          "solver": "forceAtlas2Based",
+          "stabilization": { "enabled": true, "iterations": 200 } 
+      }
     }
     """)
     
