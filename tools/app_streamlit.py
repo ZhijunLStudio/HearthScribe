@@ -1,3 +1,4 @@
+# tools/app_streamlit.py
 import streamlit as st
 import sys
 import os
@@ -21,100 +22,51 @@ st.set_page_config(
 # --- CSS 深度美化 ---
 st.markdown("""
 <style>
-    /* 全局背景 */
     .stApp { background-color: #f4f7f6; }
     
-    /* === 顶部通栏标题 (Hero Header) === */
+    /* 顶部通栏标题 */
     .main-header {
         background: white;
         padding: 25px 30px;
         border-radius: 12px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.03);
         margin-bottom: 25px;
-        border-bottom: 3px solid #1a73e8; /* 品牌底色条 */
+        border-bottom: 3px solid #1a73e8;
         display: flex;
         flex-direction: column;
         justify-content: center;
     }
     
-    .header-top-row {
-        display: flex;
-        align-items: baseline;
-        gap: 15px;
-    }
-    
-    .app-title {
-        font-size: 32px;
-        font-weight: 900;
-        color: #2c3e50;
-        letter-spacing: -0.5px;
-        margin: 0;
-    }
-    
-    .app-subtitle {
-        font-size: 18px;
-        font-weight: 500;
-        color: #1a73e8; /* 文心蓝 */
-        margin: 0;
-    }
-    
-    .badge {
-        background-color: #e8f0fe;
-        color: #1a73e8;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-size: 12px;
-        font-weight: 700;
-        transform: translateY(-5px);
-    }
-    
-    .app-slogan {
-        font-size: 14px;
-        color: #7f8c8d;
-        font-style: italic;
-        margin-top: 8px;
-        font-family: "Georgia", serif;
-    }
+    .header-top-row { display: flex; align-items: baseline; gap: 15px; }
+    .app-title { font-size: 32px; font-weight: 900; color: #2c3e50; letter-spacing: -0.5px; margin: 0; }
+    .app-subtitle { font-size: 18px; font-weight: 500; color: #1a73e8; margin: 0; }
+    .badge { background-color: #e8f0fe; color: #1a73e8; padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 700; transform: translateY(-5px); }
+    .app-slogan { font-size: 14px; color: #7f8c8d; font-style: italic; margin-top: 8px; font-family: "Georgia", serif; }
 
-    /* === 侧边栏优化 === */
-    [data-testid="stSidebar"] {
-        background-color: #ffffff;
-        border-right: 1px solid #eaeaea;
-    }
-    .stRadio label {
-        font-size: 16px !important;
-        padding: 10px 0;
-        font-weight: 500;
-    }
+    /* 侧边栏 */
+    [data-testid="stSidebar"] { background-color: #ffffff; border-right: 1px solid #eaeaea; }
+    .stRadio label { font-size: 16px !important; padding: 10px 0; font-weight: 500; }
 
-    /* === 指标卡片 === */
+    /* 指标卡片 */
     div[data-testid="stMetric"] {
-        background-color: white; 
-        padding: 15px; 
-        border-radius: 10px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.04); 
-        border: 1px solid #f0f0f0; 
-        border-left: 5px solid #ccc;
+        background-color: white; padding: 15px; border-radius: 10px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04); border: 1px solid #f0f0f0; border-left: 5px solid #ccc;
     }
-    /* 颜色区分 */
     div[data-testid="stMetric"]:nth-of-type(1) { border-left-color: #3498db; }
     div[data-testid="stMetric"]:nth-of-type(2) { border-left-color: #e74c3c; }
     div[data-testid="stMetric"]:nth-of-type(3) { border-left-color: #f1c40f; }
     div[data-testid="stMetric"]:nth-of-type(4) { border-left-color: #2ecc71; }
     
-    /* === 洞察横幅 === */
+    /* 洞察横幅 */
     .insight-box {
         background: linear-gradient(to right, #e3f2fd, #ffffff);
         border-left: 5px solid #2196f3;
-        padding: 15px 20px; 
-        border-radius: 8px; 
-        margin-bottom: 25px;
+        padding: 15px 20px; border-radius: 8px; margin-bottom: 25px;
     }
     .insight-box.ready { 
         background: linear-gradient(to right, #e8f5e9, #ffffff);
         border-left-color: #4caf50; 
     }
-    
 </style>
 """, unsafe_allow_html=True)
 
@@ -122,18 +74,20 @@ st.markdown("""
 if "view_mode" not in st.session_state: st.session_state.view_mode = "gallery"
 if "selected_event_id" not in st.session_state: st.session_state.selected_event_id = None
 
-# --- 🟢 Sidebar (极简模式) ---
+# --- Sidebar ---
 with st.sidebar:
     st.markdown("### ⚙️ 系统导航")
+    
+    # --- 关键修改在这里 ---
     nav = st.radio(
-        "", # 隐藏标题，直接显示选项
+        "系统导航", # 必须给一个非空的名字
         ["📊 态势看板", "🎞️ 影像回溯", "📝 报告生成", "🕸️ 认知图谱", "💬 智能管家"],
-        index=0
+        index=0,
+        label_visibility="collapsed" # 然后隐藏它
     )
+    # -------------------
     
     st.markdown("---")
-    
-    # 底部放置操作按钮和版权
     col_btn, _ = st.columns([1, 0.1])
     with col_btn:
         if st.button("🔄 刷新全站数据", use_container_width=True):
@@ -147,8 +101,7 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
 
-# --- 🔵 Main Header (顶部通栏) ---
-# 这段代码放在所有逻辑之前，作为页面的“页眉”
+# --- Main Header ---
 st.markdown("""
 <div class="main-header">
     <div class="header-top-row">
@@ -162,11 +115,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-
 # --- 1. 态势看板 ---
 if nav == "📊 态势看板":
-    
-    # 洞察横幅
     insight = web_utils.get_daily_insight_preview()
     css_class = "ready" if insight['ready'] else ""
     icon = "✅" if insight['ready'] else "👁️"
@@ -183,7 +133,6 @@ if nav == "📊 态势看板":
     st.subheader("📡 核心监控指标")
     stats = web_utils.get_dashboard_stats()
     
-    # Row 1
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("📸 今日事件", stats.get('event_count', 0))
     c2.metric("🚨 风险告警", stats.get('risk_count', 0), delta_color="inverse")
@@ -191,8 +140,6 @@ if nav == "📊 态势看板":
     c4.metric("👥 家人探访", f"{stats.get('family_count', 0)} 人")
     
     st.write("")
-    
-    # Row 2
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("🏃 活跃时长", f"{stats.get('active_hours', 0)} h")
     c6.metric("🛌 休息时长", f"{stats.get('rest_hours', 0)} h")
@@ -201,27 +148,18 @@ if nav == "📊 态势看板":
     
     st.divider()
     
-    # Charts
     chart_col1, chart_col2 = st.columns([2, 1])
-    
     with chart_col1:
         st.subheader("📈 24小时交互热度")
         df_trend = web_utils.get_interaction_trend()
         if not df_trend.empty:
-            # 标准折线图
             base = alt.Chart(df_trend).encode(
-                x=alt.X('Time', title='时间轴', axis=alt.Axis(labelAngle=0)),
-                # --- 关键修改在这里 ---
-                # scale=alt.Scale(domain=[0, 10]) 强制将纵轴固定在 0-10
-                y=alt.Y('Score', title='活跃评分 (0-10)', scale=alt.Scale(domain=[0, 10])),
-                tooltip=['Time', 'Score']
+                x=alt.X('Time', title='时间'), 
+                y=alt.Y('Score', title='活跃评分 (0-10)', scale=alt.Scale(domain=[0, 10])) # 固定纵轴
             )
-            
             line = base.mark_line(color='#1a73e8', strokeWidth=3)
             points = base.mark_circle(size=80, color='white', stroke='#1a73e8', strokeWidth=2)
-            # 区域填充
-            area = base.mark_area(opacity=0.1, color='#1a73e8') 
-            
+            area = base.mark_area(opacity=0.1, color='#1a73e8')
             st.altair_chart((area + line + points).interactive(), use_container_width=True)
         else:
             st.info("数据收集中...")
@@ -230,7 +168,6 @@ if nav == "📊 态势看板":
         st.subheader("🍰 场景分布")
         df_scene = web_utils.get_scene_distribution()
         if not df_scene.empty:
-            # 甜甜圈图
             base = alt.Chart(df_scene).encode(theta=alt.Theta("Count", stack=True))
             pie = base.mark_arc(outerRadius=120, innerRadius=70).encode(
                 color=alt.Color("Type", scale=alt.Scale(scheme='set2')),
@@ -238,15 +175,13 @@ if nav == "📊 态势看板":
                 tooltip=["Type", "Count"]
             )
             text = base.mark_text(radius=145).encode(
-                text=alt.Text("Type"), 
-                order=alt.Order("Count", sort="descending"), 
-                color=alt.value("#333")
+                text=alt.Text("Type"), order=alt.Order("Count", sort="descending"), color=alt.value("#333")
             )
             st.altair_chart(pie + text, use_container_width=True)
         else:
             st.caption("暂无数据")
 
-# --- 2. 影像回溯 (Grid) ---
+# --- 2. 影像回溯 ---
 elif nav == "🎞️ 影像回溯":
     st.subheader("🎞️ 历史影像归档")
     if st.session_state.view_mode == "detail":
@@ -257,7 +192,6 @@ elif nav == "🎞️ 影像回溯":
         evt = web_utils.MEMORY.get_rich_event_details([st.session_state.selected_event_id])[0]
         txt, lbl, score = web_utils.parse_summary(evt['summary'])
         
-        # 详情页顶部样式
         st.markdown(f"""
         <div style="background:white; padding:25px; border-radius:12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom:25px;">
             <h3 style="margin-top:0; color:#2c3e50;">📝 AI 观察报告</h3>
@@ -309,7 +243,6 @@ elif nav == "📝 报告生成":
     with col2:
         if 'report_md' in st.session_state:
             st.markdown("#### 📄 报告预览")
-            # 给报告加一个白底容器，像一张纸
             st.markdown(f"""
             <div style="background:white; padding:40px; border-radius:5px; box-shadow: 0 2px 15px rgba(0,0,0,0.08); min-height:600px;">
                 {st.session_state['report_md']}

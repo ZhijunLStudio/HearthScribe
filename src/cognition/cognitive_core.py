@@ -1,3 +1,4 @@
+# src/cognition/cognitive_core.py
 import base64
 import logging
 from openai import OpenAI
@@ -11,33 +12,22 @@ logger = logging.getLogger(__name__)
 class CognitiveCore:
     def __init__(self):
         print(f"  [Cognition] 初始化 AI Client...")
-        # 确保 Key 存在
         if not config.API_KEY:
-            logger.error("❌ API_KEY 未设置，认知模块将无法工作！请检查 config.py 或 .env")
-        
-        self.client = OpenAI(
-            api_key=config.API_KEY, 
-            base_url=config.BASE_URL
-        )
+            logger.error("❌ API_KEY 未设置")
+        self.client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
         
     def analyze_event(self, event_data):
         event_id = event_data['event_id']
-        # print(f"  🧠 [Cognition] 开始分析事件 {event_id}...")
         
-        # 1. 视觉分析 (核心：注入时间与人名)
+        # 1. 视觉分析 (传入更多上下文)
         analysis_result = self._visual_analysis_json(event_data)
         
         if not analysis_result:
-            print("  ❌ [Cognition] 视觉分析返回为空，跳过此事件。")
+            print("  ❌ [Cognition] 视觉分析为空")
             return None
             
         summary = analysis_result.get('summary', '无有效描述')
-        
-        # 2. 知识抽取
         kg_data = self._extract_kg(summary)
-        
-        # 打印简单日志
-        # print(f"  ✅ [Cognition] 场景: {analysis_result.get('scene_label')} | 评分: {analysis_result.get('interaction_score')}")
         
         return {
             "summary": summary,
@@ -50,15 +40,19 @@ class CognitiveCore:
         frames = event_data.get('frames', [])
         if not frames: return None
         
-        # --- 关键修改 1: 提取时间元数据 ---
-        # 格式化时间戳，例如 "2023-10-27 14:30:05"
-        start_dt = datetime.fromtimestamp(event_data['start_time']).strftime('%Y-%m-%d %H:%M:%S')
+        start_dt = datetime.fromtimestamp(event_data['start_time']).strftime('%H:%M:%S')
         end_dt = datetime.fromtimestamp(event_data['end_time']).strftime('%H:%M:%S')
         
-        # --- 关键修改 2: 提取已知人名 ---
-        # 遍历所有帧的 detections，收集非 Unknown 的名字
+        # --- 关键修复：统计检测到的人数最大值 ---
+        max_person_count = 0
         known_names = set()
+        
         for f in frames:
+            # 统计这一帧有多少个框
+            current_count = len(f.get('detections', []))
+            if current_count > max_person_count:
+                max_person_count = current_count
+                
             for d in f.get('detections', []):
                 name = d.get('name', 'Unknown')
                 if name not in ['Unknown', 'Unknown_Body']:
@@ -66,37 +60,45 @@ class CognitiveCore:
         
         names_str = ", ".join(known_names) if known_names else "无已知身份人员"
         
-        # --- 关键修改 3: 构建包含元数据的 Prompt ---
+        # --- Prompt 强逻辑注入 ---
         prompt_text = f"""
-        你是一个专业的家庭安防AI助手。请分析提供的监控视频关键帧（图片已包含检测框和人名标注）。
+        你是一个专业的家庭安防AI助手。请分析监控视频抽帧图片。
         
         【场景元数据】
         - 时间范围: {start_dt} 至 {end_dt}
-        - 已识别人物: 【{names_str}】 
-          (注意：如果图片上的检测框标注了名字，请务必在描述中使用该名字；如果标注为Unknown，则描述为陌生人)
+        - 视觉检测到的**最大同时在场人数**: 【{max_person_count}人】
+        - 已识别具体身份: 【{names_str}】 
         
         【任务要求】
-        请严格以 JSON 格式输出分析结果，包含以下字段：
-        1. "summary": 生成一段连贯的中文描述。必须包含：
-           - 具体时间点（或时间段）。
-           - 具体人物名字（谁）。
-           - 具体的动作、交互和环境细节（做了什么）。
-        2. "scene_label": 从以下标签中选择最贴切的一个：[无人闲置, 单人独处, 多人社交, 家庭聚会, 护理服务, 跌倒风险, 异常入侵]。
-        3. "interaction_score": 给出 0-10 的整数评分 (0为无人，10为紧急事件/极高频互动)。
+        请结合图片内容和元数据，严格以 JSON 格式输出：
+        1. "summary": 生成一段连贯的中文描述。
+           - 必须明确指出画面中有几个人。
+           - 如果有交互（交谈、传递物品、共处），请重点描述。
+        2. "scene_label": 从以下标签中选一：[无人闲置, 单人独处, 多人社交, 家庭聚会, 护理服务, 跌倒风险, 异常入侵]。
+           - **重要规则**：如果元数据中人数 >= 2，且人们在同一空间，请优先选择 [多人社交] 或 [家庭聚会]，**严禁**选择 [单人独处]。
+        3. "interaction_score": 0-10 整数。
+           - 单人活动一般 1-3 分。
+           - 多人互动一般 4-8 分。
+           - 紧急情况 9-10 分。
 
         【JSON 示例】
         {{
-            "summary": "在14:30分左右，张三独自坐在客厅沙发上...",
-            "scene_label": "单人独处",
-            "interaction_score": 2
+            "summary": "画面中出现两人。张三在沙发上，李四递给他一杯水...",
+            "scene_label": "多人社交",
+            "interaction_score": 5
         }}
         """
         
+        # 采样逻辑 (均匀采样15张)
+        MAX_IMAGES = 15 
+        total_frames = len(frames)
+        if total_frames <= MAX_IMAGES:
+            indices = range(total_frames)
+        else:
+            step = (total_frames - 1) / (MAX_IMAGES - 1)
+            indices = [int(i * step) for i in range(MAX_IMAGES)]
+            
         content = [{"type": "text", "text": prompt_text}]
-        
-        # 图片采样：取首、中、尾 3 张，避免 token 过多
-        # MemoryStream 保存的图片通常已经画上了框和名字
-        indices = [0, len(frames)//2, -1] if len(frames) >= 3 else range(len(frames))
         
         valid_images = 0
         for idx in indices:
@@ -106,38 +108,25 @@ class CognitiveCore:
                     b64 = base64.b64encode(img.read()).decode()
                     content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
                     valid_images += 1
-            except Exception as e:
-                logger.warning(f"读取图片失败: {f['image_path']} - {e}")
+            except: pass
 
-        if valid_images == 0:
-            return None
+        if valid_images == 0: return None
 
         try:
-            # print(f"      -> 发送 {valid_images} 张图片给大模型...")
             resp = self.client.chat.completions.create(
-                model=config.AI_VL_MODEL, # 确保 config 中定义了视觉模型
+                model=config.AI_VL_MODEL, 
                 messages=[{"role": "user", "content": content}],
                 temperature=0.2,
-                max_tokens=800,
+                max_tokens=1000, 
                 response_format={"type": "json_object"}
             )
             return self._clean_and_parse_json(resp.choices[0].message.content)
         except Exception as e:
-            logger.error(f"视觉分析 API 调用失败: {e}")
+            logger.error(f"视觉分析失败: {e}")
             return None
 
     def _extract_kg(self, text):
-        """从文本中提取知识图谱实体和关系"""
-        prompt = f"""
-        从以下文本中提取实体(Entities)和关系(Relationships)。
-        文本: "{text}"
-        
-        请严格返回 JSON 格式:
-        {{
-            "entities": [{{"name": "张三", "type": "Person"}}, {{"name": "沙发", "type": "Object"}}],
-            "relationships": [{{"source": "张三", "target": "沙发", "type": "坐在", "relation": "sitting_on"}}]
-        }}
-        """
+        prompt = f"提取实体和关系(JSON): {text}"
         try:
             resp = self.client.chat.completions.create(
                 model=config.AI_THINKING_MODEL,
@@ -146,23 +135,11 @@ class CognitiveCore:
                 response_format={"type": "json_object"}
             )
             return self._clean_and_parse_json(resp.choices[0].message.content)
-        except Exception:
-            return {"entities": [], "relationships": []}
+        except: return {"entities": [], "relationships": []}
 
     def _clean_and_parse_json(self, raw_text):
-        """鲁棒的 JSON 解析器"""
-        try:
-            # 1. 尝试直接解析
-            return json.loads(raw_text)
+        try: return json.loads(raw_text)
         except:
-            # 2. 如果包含 markdown 代码块，尝试去除
             text = raw_text.replace("```json", "").replace("```", "").strip()
-            # 3. 尝试正则提取大括号内容
             match = re.search(r'\{.*\}', text, re.DOTALL)
-            if match:
-                try:
-                    return json.loads(match.group())
-                except:
-                    pass
-            logger.error(f"JSON 解析失败。原始返回: {raw_text[:100]}...")
-            return {}
+            return json.loads(match.group()) if match else {}

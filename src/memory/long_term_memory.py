@@ -51,7 +51,6 @@ class LongTermMemory:
 
     def save_event(self, event_data, summary, kg_data, scene_label=None, interaction_score=None):
         event_id = event_data['event_id']
-        # 拼接扩展信息
         ext_summary = summary
         if scene_label: ext_summary += f"|||LABEL:{scene_label}"
         if interaction_score is not None: ext_summary += f"|||SCORE:{interaction_score}"
@@ -63,29 +62,42 @@ class LongTermMemory:
                 c.execute("INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?)", 
                           (event_id, event_data['start_time'], event_data['end_time'], ext_summary, paths, event_data.get('preview_image_path')))
                 
-                # KG 存储 (略简化，保证不报错)
+                # --- 关键修复：KG 存储鲁棒性 ---
                 if kg_data and 'entities' in kg_data:
                     ent_map = {}
                     for ent in kg_data['entities']:
-                        c.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?,?)", (ent['name'], ent['type']))
-                        c.execute("SELECT id FROM entities WHERE name=?", (ent['name'],))
-                        ent_map[ent['name']] = c.fetchone()[0]
+                        # 使用 .get() 提供默认值，防止报错
+                        name = ent.get('name', 'Unknown').strip()
+                        etype = ent.get('type', 'Object').strip()
+                        
+                        if not name: continue
+                        
+                        c.execute("INSERT OR IGNORE INTO entities (name, type) VALUES (?,?)", (name, etype))
+                        c.execute("SELECT id FROM entities WHERE name=? AND type=?", (name, etype))
+                        row = c.fetchone()
+                        if row: ent_map[name] = row[0]
+                        
                     for rel in kg_data.get('relationships', []):
-                        if rel['source'] in ent_map and rel['target'] in ent_map:
+                        src = rel.get('source')
+                        tgt = rel.get('target')
+                        relation = rel.get('relation', rel.get('type', 'related_to'))
+                        
+                        if src in ent_map and tgt in ent_map:
                             c.execute("INSERT INTO relationships (source_id, target_id, relation, event_id) VALUES (?,?,?,?)",
-                                      (ent_map[rel['source']], ent_map[rel['target']], rel['type'], event_id))
+                                      (ent_map[src], ent_map[tgt], relation, event_id))
+                                      
                 self.sqlite_conn.commit()
             
-            # LanceDB
             vec = self.embedding_model.encode(summary)
             if hasattr(vec, "tolist"): vec = vec.tolist()
             self.vector_table.add([{"vector": vec, "event_id": event_id, "summary": summary, "timestamp": event_data['start_time']}])
             return True
         except Exception as e:
             logger.error(f"Save failed: {e}")
+            try: self.sqlite_conn.rollback()
+            except: pass
             return False
 
-    # --- 之前缺失的方法 ---
     def get_events_for_period(self, start_ts, end_ts):
         with self.db_lock:
             c = self.sqlite_conn.cursor()
@@ -107,31 +119,24 @@ class LongTermMemory:
             if event_ids:
                 if not event_ids: return []
                 ph = ','.join(['?']*len(event_ids))
-                c.execute(f"SELECT * FROM events WHERE event_id IN ({ph})", event_ids)
+                c.execute(f"SELECT * FROM events WHERE event_id IN ({ph}) ORDER BY start_time DESC", event_ids)
             else:
                 c.execute("SELECT * FROM events ORDER BY start_time DESC LIMIT ?", (limit,))
             return [dict(row) for row in c.fetchall()]
 
     def query_knowledge_graph_by_nl(self, query):
-        # 简单实现，避免报错
-        return "KG Query logic placeholder" 
+        return "KG Query Placeholder" 
 
     def get_all_kg_data(self, limit=300):
         with self.db_lock:
             c = self.sqlite_conn.cursor()
             c.execute(f"""SELECT e1.name as source, e1.type as source_type, r.relation, e2.name as target, e2.type as target_type, r.event_id 
-                         FROM relationships r 
-                         JOIN entities e1 ON r.source_id=e1.id 
-                         JOIN entities e2 ON r.target_id=e2.id LIMIT ?""", (limit,))
+                         FROM relationships r JOIN entities e1 ON r.source_id=e1.id JOIN entities e2 ON r.target_id=e2.id LIMIT ?""", (limit,))
             return [dict(row) for row in c.fetchall()]
     
     def get_kg_for_event(self, event_id):
-        # 补充缺失的方法
         with self.db_lock:
             c = self.sqlite_conn.cursor()
-            c.execute("""SELECT e1.name as source, r.relation, e2.name as target 
-                         FROM relationships r 
-                         JOIN entities e1 ON r.source_id=e1.id 
-                         JOIN entities e2 ON r.target_id=e2.id
-                         WHERE r.event_id=?""", (event_id,))
+            c.execute("""SELECT e1.name as source, r.relation, e2.name as target FROM relationships r 
+                         JOIN entities e1 ON r.source_id=e1.id JOIN entities e2 ON r.target_id=e2.id WHERE r.event_id=?""", (event_id,))
             return [dict(row) for row in c.fetchall()]
