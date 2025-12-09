@@ -236,7 +236,7 @@ def generate_daily_report_content(date_obj=None):
     try:
         if MASTER_AGENT:
             resp = MASTER_AGENT.llm_client.chat.completions.create(
-                model=config.AI_THINKING_MODEL, 
+                model=config.LLM_MODEL_NAME, 
                 messages=[{"role": "user", "content": prompt}], 
                 temperature=0.6 # 稍微提高温度，让文笔更好
             )

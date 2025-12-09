@@ -11,10 +11,15 @@ logger = logging.getLogger(__name__)
 
 class CognitiveCore:
     def __init__(self):
-        print(f"  [Cognition] 初始化 AI Client...")
-        if not config.API_KEY:
-            logger.error("❌ API_KEY 未设置")
-        self.client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
+        print(f"  [Cognition] 初始化 LVM Client...")
+        if not config.LVM_API_KEY:
+            logger.error("❌ LVM_API_KEY 未设置")
+        self.lvm_client = OpenAI(api_key=config.LVM_API_KEY, base_url=config.LVM_BASE_URL)
+        
+        print(f"  [Cognition] 初始化 LLM Client...")
+        if not config.LLM_API_KEY:
+            logger.error("❌ LLM_API_KEY 未设置")
+        self.llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
         
     def analyze_event(self, event_data):
         event_id = event_data['event_id']
@@ -113,8 +118,8 @@ class CognitiveCore:
         if valid_images == 0: return None
 
         try:
-            resp = self.client.chat.completions.create(
-                model=config.AI_VL_MODEL, 
+            resp = self.lvm_client.chat.completions.create(
+                model=config.LVM_MODEL_NAME, 
                 messages=[{"role": "user", "content": content}],
                 temperature=0.2,
                 max_tokens=1000, 
@@ -128,8 +133,8 @@ class CognitiveCore:
     def _extract_kg(self, text):
         prompt = f"提取实体和关系(JSON): {text}"
         try:
-            resp = self.client.chat.completions.create(
-                model=config.AI_THINKING_MODEL,
+            resp = self.llm_client.chat.completions.create(
+                model=config.LLM_MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 response_format={"type": "json_object"}

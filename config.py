@@ -21,14 +21,17 @@ SQLITE_DB_PATH = "./memory_db/knowledge.db"
 IMAGE_STORAGE_PATH = "./event_images"
 FACE_INDEX_DIR = "./face_index"
 
-# --- 模型 API 配置 (关键修复) ---
-# 优先读取 ERNIE_API_KEY，如果没有则尝试读取 API_KEY
-API_KEY = os.getenv("ERNIE_API_KEY") or os.getenv("API_KEY", "")
-BASE_URL = os.getenv("ERNIE_BASE_URL") or os.getenv("BASE_URL", "https://aistudio.baidu.com/llm/lmapi/v3")
+# --- 视觉大模型 API 配置 (LVM) ---
+LVM_API_KEY = os.getenv("LVM_API_KEY", "")
+LVM_BASE_URL = os.getenv("LVM_BASE_URL", "https://aistudio.baidu.com/llm/lmapi/v3")
+LVM_MODEL_NAME = "ernie-4.5-turbo-vl"  # 视觉模型
 
-# 模型名称
-AI_VL_MODEL = "ernie-4.5-turbo-vl"  # 视觉模型
-AI_THINKING_MODEL = "ernie-4.5-vl-28b-a3b-thinking" # 思考/总结模型
+# --- 语言大模型 API 配置 (LLM) ---
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://aistudio.baidu.com/llm/lmapi/v3")
+LLM_MODEL_NAME = "ernie-4.5-21b-a3b-thinking"  # 思考/总结模型
+
+# --- 其他模型 ---
 EMBEDDING_MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
 
 # PaddlePaddle 设置
@@ -36,5 +39,7 @@ PADDLE_DEVICE = "cpu" # 或 "gpu"
 DET_MODEL_NAME = "PPLCNet_x1_0_person_detection"
 
 # 检查 Key 是否存在
-if not API_KEY:
-    print("⚠️ 警告: 未检测到 API_KEY，请检查 .env 文件！")
+if not LVM_API_KEY:
+    print("⚠️ 警告: 未检测到 LVM_API_KEY，请检查 .env 文件！")
+if not LLM_API_KEY:
+    print("⚠️ 警告: 未检测到 LLM_API_KEY，请检查 .env 文件！")

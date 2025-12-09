@@ -19,7 +19,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 class QA_Agent:
     def __init__(self):
         print("\n正在初始化命令行问答助手...")
-        self.memory = LongTermMemory(db_path=config.DB_PATH)
+        self.memory = LongTermMemory(db_path=config.SQLITE_DB_PATH)
         self.llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
         print("\n问答助手已就绪！请输入您的问题，或输入 '退出' 来结束。")
 

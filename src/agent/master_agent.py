@@ -12,11 +12,8 @@ logger = logging.getLogger(__name__)
 class MasterAgent:
     def __init__(self, memory: LongTermMemory):
         self.memory = memory
-        # 兼容 config 写法，优先读取 ERNIE 配置
-        api_key = getattr(config, 'API_KEY', getattr(config, 'ERNIE_API_KEY', ''))
-        base_url = getattr(config, 'BASE_URL', getattr(config, 'ERNIE_BASE_URL', ''))
-        
-        self.llm_client = OpenAI(api_key=api_key, base_url=base_url)
+        # 使用 LLM 配置
+        self.llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
         logger.info("MasterAgent initialized.")
 
     def _get_query_route(self, query: str) -> str:
@@ -36,7 +33,7 @@ class MasterAgent:
         """
         try:
             # 使用思考模型进行路由决策
-            model_name = getattr(config, 'AI_THINKING_MODEL', 'ernie-4.5-vl-28b-a3b-thinking')
+            model_name = config.LLM_MODEL_NAME
             response = self.llm_client.chat.completions.create(
                 model=model_name, 
                 messages=[{"role": "user", "content": prompt}], 
@@ -110,7 +107,7 @@ class MasterAgent:
         【用户问题】: {query}
         """
         try:
-            model_name = getattr(config, 'AI_THINKING_MODEL', 'ernie-4.5-vl-28b-a3b-thinking')
+            model_name = config.LLM_MODEL_NAME
             resp = self.llm_client.chat.completions.create(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],

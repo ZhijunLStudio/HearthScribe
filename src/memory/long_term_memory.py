@@ -39,7 +39,8 @@ class LongTermMemory:
         except:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
             
-        self.llm_client = OpenAI(api_key=config.API_KEY, base_url=config.BASE_URL)
+        # 使用 LLM 配置
+        self.llm_client = OpenAI(api_key=config.LLM_API_KEY, base_url=config.LLM_BASE_URL)
 
     def _init_sqlite_tables(self):
         with self.db_lock:
