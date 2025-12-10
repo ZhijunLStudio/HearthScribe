@@ -35,7 +35,6 @@ LLM_MODEL_NAME = "ernie-4.5-21b-a3b-thinking"  # 思考/总结模型
 EMBEDDING_MODEL_PATH = "sentence-transformers/all-MiniLM-L6-v2"
 
 # PaddlePaddle 设置
-PADDLE_DEVICE = "cpu" # 或 "gpu"
 DET_MODEL_NAME = "PPLCNet_x1_0_person_detection"
 
 # 检查 Key 是否存在

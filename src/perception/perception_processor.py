@@ -12,10 +12,10 @@ logger = logging.getLogger(__name__)
 class PerceptionProcessor:
     def __init__(self, index_dir):
         print(f"  [Perception] 加载目标检测: {config.DET_MODEL_NAME}...")
-        self.det_pipeline = create_pipeline(pipeline="object_detection", device=config.PADDLE_DEVICE)
+        self.det_pipeline = create_pipeline(pipeline="object_detection", device="cpu")
         
         print(f"  [Perception] 加载人脸识别: Face Rec...")
-        self.face_pipeline = create_pipeline(pipeline="face_recognition", device=config.PADDLE_DEVICE)
+        self.face_pipeline = create_pipeline(pipeline="face_recognition", device="cpu")
         
         self.index_dir = index_dir
         self.det_threshold = 0.4
